@@ -67,7 +67,9 @@ The licenses of the included pilot-link, libusb and popt are in
 Requirements: macOS 14+, Swift command line tools, and `pilot-xfer` / `pilot-install-user`
 from [pilot-link](https://github.com/desrod/pilot-link) in `~/.local/bin/`.
 
-pilot-link on Apple Silicon (tested with pilot-link 0.15.1):
+pilot-link on Apple Silicon, from the current `master` branch (tested with commit
+`1dfacd6c`). The tagged 0.15.0/0.15.1 sources do not find any USB device on macOS &ndash; this
+was fixed upstream in commit `c32f9eed` ("libusb: fix device discovery on macOS and the BSDs"):
 
 ```bash
 brew install libusb libusb-compat autoconf automake libtool popt readline pkg-config
