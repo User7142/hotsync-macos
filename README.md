@@ -5,6 +5,24 @@ HotSync on Windows 98/XP: put the Palm into the cradle, press HotSync, done.
 
 Background and pilot-link build for Apple Silicon: [palm2000.com](https://palm2000.com/articles/43)
 
+## Download
+
+A ready-to-use build for **Apple Silicon Macs (macOS 14 or newer)** is available on the
+[Releases page](https://github.com/User7142/hotsync-macos/releases/latest):
+`HotSync-<version>-macos-arm64.zip`. `pilot-xfer` and all the libraries it needs are
+included &ndash; no Homebrew, no pilot-link installation required.
+
+1. Unzip and move `HotSync.app` to `/Applications`.
+2. The app is not notarized by Apple, so macOS blocks it on the first start. Open it once,
+   then go to **System Settings → Privacy & Security** and click **Open Anyway**.
+   Alternatively, in the Terminal:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/HotSync.app
+   ```
+
+The licenses of the included pilot-link, libusb and popt are in
+`HotSync.app/Contents/Resources/ThirdPartyLicenses/`.
+
 ## Features
 
 - **Menu bar app** (SwiftUI) &ndash; always ready, no Dock icon
@@ -72,7 +90,10 @@ open HotSync.app
 The build script:
 1. compiles with `swift build -c release`
 2. creates the `.app` bundle with `Info.plist`
-3. copies `pilot-xfer` and its libraries (libpisock, libusb, libpopt) into the bundle
+3. copies `pilot-xfer`, `pilot-install-user` and all their non-system libraries (libpisock,
+   libusb-compat, libusb, popt &ndash; found recursively) into the bundle and rewrites the
+   references to `@rpath`, so the app does not depend on Homebrew; the build fails if any
+   reference outside the bundle is left
 4. signs the app ad hoc (no Apple developer account needed)
 
 ### Double-click handler
@@ -106,7 +127,7 @@ This is a hobby project that does its job for me, but it has rough edges:
 - `USBMonitor.swift` is currently unused.
 - The Palm only appears on the USB bus while a HotSync is running, so `pilot-xfer` has to be
   started first &ndash; the app does this automatically when files are queued.
-- The app is only signed ad hoc and meant for personal use.
+- The app is only signed ad hoc and not notarized (see [Download](#download)).
 
 Pull requests are welcome.
 

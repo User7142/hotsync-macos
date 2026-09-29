@@ -20,7 +20,6 @@ final class PalmIdentity: @unchecked Sendable {
         let process = Process()
         process.executableURL = tool
         process.arguments = ["-p", "usb:", "-l"]
-        configureEnvironment(process)
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -107,7 +106,6 @@ final class PalmIdentity: @unchecked Sendable {
         let process = Process()
         process.executableURL = tool
         process.arguments = ["-p", "usb:", "-u", name, "-i", "\(resolvedUserId)", "-q"]
-        configureEnvironment(process)
 
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
@@ -181,16 +179,6 @@ final class PalmIdentity: @unchecked Sendable {
         }
 
         return (name, userId)
-    }
-
-    private func configureEnvironment(_ process: Process) {
-        if let resourcePath = Bundle.main.resourcePath {
-            var env = ProcessInfo.processInfo.environment
-            let frameworksPath = Bundle.main.bundlePath + "/Contents/Frameworks"
-            let existingDyld = env["DYLD_LIBRARY_PATH"] ?? ""
-            env["DYLD_LIBRARY_PATH"] = "\(frameworksPath):\(resourcePath):\(existingDyld)"
-            process.environment = env
-        }
     }
 
     private func findPilotInstallUser() -> URL? {

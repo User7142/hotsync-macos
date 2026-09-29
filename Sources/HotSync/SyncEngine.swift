@@ -162,14 +162,6 @@ final class SyncEngine: @unchecked Sendable {
         process.executableURL = pilotXferURL
         process.arguments = ["-p", "usb:", "-l"]
 
-        if let resourcePath = Bundle.main.resourcePath {
-            var env = ProcessInfo.processInfo.environment
-            let frameworksPath = Bundle.main.bundlePath + "/Contents/Frameworks"
-            let existingDyld = env["DYLD_LIBRARY_PATH"] ?? ""
-            env["DYLD_LIBRARY_PATH"] = "\(frameworksPath):\(resourcePath):\(existingDyld)"
-            process.environment = env
-        }
-
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
@@ -269,14 +261,6 @@ final class SyncEngine: @unchecked Sendable {
         process.arguments = ["-p", "usb:", "-i", file.path]
 
         // Wichtig: Library-Pfade setzen falls embedded
-        if let resourcePath = Bundle.main.resourcePath {
-            var env = ProcessInfo.processInfo.environment
-            let frameworksPath = Bundle.main.bundlePath + "/Contents/Frameworks"
-            let existingDyld = env["DYLD_LIBRARY_PATH"] ?? ""
-            env["DYLD_LIBRARY_PATH"] = "\(frameworksPath):\(resourcePath):\(existingDyld)"
-            process.environment = env
-        }
-
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = outputPipe
