@@ -28,6 +28,8 @@ The licenses of the included pilot-link, libusb and popt are in
 - **Menu bar app** (SwiftUI) &ndash; always ready, no Dock icon
 - **Install queue** &ndash; `.prc`/`.pdb` files via drag & drop, double-click in the Finder, or the install folder
 - **Automatic waiting** &ndash; as soon as files are queued, `pilot-xfer` starts and waits for the Palm
+- **One HotSync for everything** &ndash; all queued files are transferred in a single `pilot-xfer` session
+- **Verified installs** &ndash; a file only counts as installed when `pilot-xfer` confirmed its transfer; anything else stays queued for the next HotSync
 - **Progress** &ndash; live status with a progress bar during the transfer
 - **Notifications** &ndash; macOS notification after a successful sync
 - **Several devices** &ndash; each Palm gets its own profile (HotSync user name and ID) and its own folder; for a new device, the user name is transferred on the first HotSync
@@ -47,7 +49,9 @@ The licenses of the included pilot-link, libusb and popt are in
 2. The menu bar icon changes to an antenna (`pilot-xfer` is waiting)
 3. **Press the HotSync button on the Palm**
 4. The transfer runs, the progress bar shows the status
-5. After a successful sync, the files are moved to `~/HotSync/<device>/Installed/`
+5. Files whose transfer `pilot-xfer` confirmed are moved to `~/HotSync/<device>/Installed/`;
+   files that were not transferred (timeout, error, cancel on the Palm) stay in `Install/`
+   and are offered again on the next HotSync
 
 ### Folders
 
@@ -114,13 +118,13 @@ Once, after the first start:
 
 This is a hobby project that does its job for me, but it has rough edges:
 
-- **Detecting the end of a sync is a heuristic.** `pilot-xfer` does not always exit after a
-  successful transfer. The app watches its output for "total" and then kills the process
-  (SIGKILL). If the output format changes, detection breaks.
-- **A timeout counts as success.** If `pilot-xfer` runs into the timeout, the file is still
-  marked as installed and moved to `Installed/`. Check the Palm if in doubt.
-- **Thread safety.** `SyncEngine` and `PalmIdentity` are `@unchecked Sendable` and share state
-  between a background queue and the main thread without locks or actors.
+- **Install results are read from the `pilot-xfer` output.** A file counts as installed when
+  its `Installing '…'` line is followed by `… KiB total.`; `pilot-xfer` does not always exit
+  after a successful transfer, so the app then ends it (SIGKILL). If the output format of
+  pilot-link changes, files are no longer confirmed &ndash; they stay queued instead of being
+  reported as installed.
+- **Thread safety.** `PalmIdentity` is `@unchecked Sendable` and shares state between a
+  background queue and the main thread without locks or actors.
 - **UI refresh via timer.** The main view refreshes every 0.5 s instead of purely reactively.
 - **No real two-way sync.** The app only installs files. Addresses, dates and memos are not
   synced like with the original Palm Desktop, and the "Backups" folder is not used yet.

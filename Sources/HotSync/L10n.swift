@@ -174,6 +174,14 @@ enum L10n {
     static func logAllInstalled(_ n: Int) -> String { s("Alle \(n) Datei(en) installiert!", "All \(n) file(s) installed!") }
     static func logFileProgress(_ i: Int, _ n: Int, _ name: String) -> String { "[\(i)/\(n)] \(name)" }
     static func logFileInstalled(_ name: String) -> String { s("\(name) installiert!", "\(name) installed!") }
+    static func logFileNotInstalled(_ name: String) -> String { s(
+        "\(name) NICHT installiert — bleibt für den nächsten HotSync in der Warteschlange",
+        "\(name) NOT installed — stays queued for the next HotSync"
+    ) }
+    static func logInstalledPartially(_ ok: Int, _ n: Int) -> String { s(
+        "\(ok) von \(n) Datei(en) installiert",
+        "\(ok) of \(n) file(s) installed"
+    ) }
     static func logExitCode(_ code: Int32, _ name: String) -> String { s("Exit \(code) bei \(name)", "Exit \(code) for \(name)") }
     static var logErrorPilotXfer: String { s("FEHLER: pilot-xfer nicht in Bundle oder PATH!", "ERROR: pilot-xfer not found in bundle or PATH!") }
     static func logError(_ msg: String) -> String { s("FEHLER: \(msg)", "ERROR: \(msg)") }
