@@ -20,6 +20,34 @@ private func image(name: String = "DateFix", resource: Bool, records: Int = 1,
     return Data(bytes)
 }
 
+/// An application image with a 'tver' resource behind a 'code' resource.
+private func imageWithVersion(_ version: String?) -> Data {
+    let resources = version == nil ? 1 : 2
+    var bytes = [UInt8](repeating: 0, count: 78)
+    for (i, b) in "DateFix".utf8.enumerated() { bytes[i] = b }
+    bytes[33] = 0x01
+    for (i, b) in "applDtFx".utf8.enumerated() { bytes[60 + i] = b }
+    bytes[77] = UInt8(resources)
+    let dataStart = 78 + resources * 10 + 2
+    func entry(_ type: String, _ id: Int, _ offset: Int) -> [UInt8] {
+        Array(type.utf8) + [UInt8(id >> 8), UInt8(id & 0xFF)]
+            + [UInt8(offset >> 24), UInt8((offset >> 16) & 0xFF), UInt8((offset >> 8) & 0xFF), UInt8(offset & 0xFF)]
+    }
+    bytes += entry("code", 1, dataStart)
+    if version != nil { bytes += entry("tver", 1, dataStart + 4) }
+    bytes += [0, 0]
+    bytes += [1, 2, 3, 4]                         // the code resource
+    if let version { bytes += Array(version.utf8) + [0] }
+    return Data(bytes)
+}
+
+@Test func versionOfApplication() throws {
+    let file = try PalmDatabaseFile.inspect(data: imageWithVersion("2.0d11"), fileExtension: "prc").get()
+    #expect(file.version == "2.0d11")
+    let none = try PalmDatabaseFile.inspect(data: imageWithVersion(nil), fileExtension: "prc").get()
+    #expect(none.version == nil)
+}
+
 @Test func validApplication() throws {
     let file = try PalmDatabaseFile.inspect(data: image(resource: true), fileExtension: "prc").get()
     #expect(file.name == "DateFix")

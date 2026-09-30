@@ -27,7 +27,7 @@ The licenses of the included pilot-link, libusb and popt are in
 
 - **Menu bar app** (SwiftUI) &ndash; always ready, no Dock icon
 - **Install queue** &ndash; `.prc`/`.pdb`/`.pqa` files via drag & drop, double-click in the Finder, or the install folder; the queue always shows the folder's content, whichever way a file got there
-- **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, `.prc` holding a record database, …) are marked red and never sent
+- **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, **version** (of an application: its `tver` resource), type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, `.prc` holding a record database, …) are marked red and never sent
 - **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
 - **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
 - **Automatic waiting** &ndash; as soon as files are queued, `pilot-xfer` starts and waits for the Palm

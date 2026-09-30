@@ -93,8 +93,10 @@ enum L10n {
     static func queueInvalid(_ reason: String) -> String { s(
         "Wird nicht übertragen: \(reason)", "Not sent: \(reason)"
     ) }
-    static func queueDatabase(_ name: String, _ type: String, _ creator: String, _ size: String) -> String {
-        "\(name) · \(type)/\(creator) · \(size)"
+    static func queueDatabase(_ name: String, _ version: String?, _ type: String,
+                              _ creator: String, _ size: String) -> String {
+        let title = version.map { "\(name) \($0)" } ?? name
+        return "\(title) · \(type)/\(creator) · \(size)"
     }
 
     static func problemText(_ problem: PalmDatabaseFile.Problem) -> String {

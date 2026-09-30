@@ -22,6 +22,9 @@ public struct PalmDatabaseFile: Equatable, Sendable {
     public let creator: String
     public let isResourceDatabase: Bool
     public let recordCount: Int
+    /// The version string of an application (resource 'tver' ID 1, the
+    /// "VERSION" of the resource file), nil if the file has none.
+    public let version: String?
 
     public static let supportedExtensions: Set<String> = ["prc", "pdb", "pqa"]
     static let headerSize = 78
@@ -84,8 +87,31 @@ public struct PalmDatabaseFile: Equatable, Sendable {
             type: fourCC(bytes[60..<64]),
             creator: fourCC(bytes[64..<68]),
             isResourceDatabase: isResource,
-            recordCount: count
+            recordCount: count,
+            version: isResource ? versionResource(bytes, count: count) : nil
         ))
+    }
+
+    /// Resource list entry: type[4], id[2], offset[4]. The 'tver' resource
+    /// holds a NUL-terminated string that ends at the next resource.
+    private static func versionResource(_ bytes: [UInt8], count: Int) -> String? {
+        var offsets: [Int] = []
+        var start: Int?
+        for i in 0..<count {
+            let e = headerSize + i * 10
+            let offset = Int(bytes[e + 6]) << 24 | Int(bytes[e + 7]) << 16
+                | Int(bytes[e + 8]) << 8 | Int(bytes[e + 9])
+            offsets.append(offset)
+            let id = Int(bytes[e + 4]) << 8 | Int(bytes[e + 5])
+            if start == nil, id == 1, fourCC(bytes[e..<e + 4]) == "tver" {
+                start = offset
+            }
+        }
+        guard let start, start < bytes.count else { return nil }
+        let end = min(offsets.filter { $0 > start }.min() ?? bytes.count, bytes.count)
+        let text = bytes[start..<end].prefix { $0 != 0 }
+        guard !text.isEmpty, text.allSatisfy({ $0 >= 0x20 }) else { return nil }
+        return String(decoding: text, as: UTF8.self)
     }
 
     private static func fourCC(_ bytes: ArraySlice<UInt8>) -> String {

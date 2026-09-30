@@ -253,7 +253,7 @@ struct MainView: View {
         let size = ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
         switch item.status {
         case .ready(let db), .installing(let db), .failed(let db, _):
-            return L10n.queueDatabase(db.name, db.type, db.creator, size)
+            return L10n.queueDatabase(db.name, db.version, db.type, db.creator, size)
         case .invalid:
             return size
         }
