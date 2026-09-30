@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import HotSyncCore
 
 struct MainView: View {
     @Environment(AppState.self) var appState
@@ -173,7 +174,7 @@ struct MainView: View {
     private var queueSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 4) {
-                if appState.installQueue.pendingFiles.isEmpty {
+                if appState.installQueue.items.isEmpty {
                     HStack {
                         Spacer()
                         VStack(spacing: 6) {
@@ -188,24 +189,8 @@ struct MainView: View {
                         Spacer()
                     }
                 } else {
-                    ForEach(appState.installQueue.pendingFiles, id: \.absoluteString) { file in
-                        HStack {
-                            Image(systemName: "doc.fill")
-                                .foregroundStyle(.blue)
-                                .font(.callout)
-                            Text(file.lastPathComponent)
-                                .font(.callout)
-                                .lineLimit(1)
-                            Spacer()
-                            Button(action: {
-                                appState.installQueue.removeFromQueue(file)
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.vertical, 2)
+                    ForEach(appState.installQueue.items) { item in
+                        queueRow(item)
                     }
                 }
             }
@@ -215,10 +200,79 @@ struct MainView: View {
             HStack {
                 Label(L10n.queueLabel, systemImage: "tray.full")
                 Spacer()
-                Text(L10n.queueFiles(appState.installQueue.pendingFiles.count))
+                Text(appState.installQueue.invalidCount == 0
+                     ? L10n.queueFiles(appState.installQueue.items.count)
+                     : L10n.queueFilesInvalid(appState.installQueue.items.count,
+                                              appState.installQueue.invalidCount))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func queueRow(_ item: InstallQueue.QueueItem) -> some View {
+        let look = rowLook(item.status)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: look.icon)
+                .foregroundStyle(look.color)
+                .font(.callout)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.name)
+                    .font(.callout)
+                    .lineLimit(1)
+                if let details = databaseDetails(item) {
+                    Text(details)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text(look.text)
+                    .font(.caption)
+                    .foregroundStyle(look.textColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button(action: { appState.installQueue.remove(item) }) {
+                Image(systemName: "trash")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(L10n.queueRemoveHelp)
+            .disabled(isInstalling(item.status))
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func isInstalling(_ status: InstallQueue.Status) -> Bool {
+        if case .installing = status { return true }
+        return false
+    }
+
+    private func databaseDetails(_ item: InstallQueue.QueueItem) -> String? {
+        let size = ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
+        switch item.status {
+        case .ready(let db), .installing(let db), .failed(let db, _):
+            return L10n.queueDatabase(db.name, db.type, db.creator, size)
+        case .invalid:
+            return size
+        }
+    }
+
+    private func rowLook(_ status: InstallQueue.Status)
+        -> (icon: String, color: Color, text: String, textColor: Color) {
+        switch status {
+        case .ready:
+            return ("doc.fill", .blue, L10n.queueReady, .secondary)
+        case .installing:
+            return appState.syncEngine.state == .syncing
+                ? ("arrow.down.doc.fill", .blue, L10n.queueInstalling, .blue)
+                : ("hourglass", .orange, L10n.queueWaiting, .orange)
+        case .failed(_, let failure):
+            return ("exclamationmark.triangle.fill", .red,
+                    L10n.queueFailed(L10n.failureText(failure)), .red)
+        case .invalid(let problem):
+            return ("xmark.octagon.fill", .red, L10n.queueInvalid(L10n.problemText(problem)), .red)
         }
     }
 
@@ -395,19 +449,15 @@ struct MainView: View {
         }
     }
 
+    /// Every dropped file goes into the Install folder; the queue then
+    /// shows whether HotSync can install it.
     private func handleDrop(_ providers: [NSItemProvider]) {
         for provider in providers {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                 guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil),
-                      InstallQueue.supportedExtensions.contains(url.pathExtension.lowercased()) else { return }
-
-                let dest = self.appState.installQueue.installDir.appendingPathComponent(url.lastPathComponent)
-                try? FileManager.default.removeItem(at: dest)
-                try? FileManager.default.copyItem(at: url, to: dest)
-
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                 DispatchQueue.main.async {
-                    self.appState.installQueue.enqueue(dest)
+                    self.appState.installQueue.add([url])
                 }
             }
         }

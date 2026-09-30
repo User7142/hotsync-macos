@@ -1,4 +1,5 @@
 import Foundation
+import HotSyncCore
 import Observation
 
 @Observable
@@ -62,7 +63,7 @@ final class SyncEngine: @unchecked Sendable {
         guard !isActive else { return }
 
         let session = beginSession()
-        let files = queue.dequeueAll()
+        let files = queue.pendingFiles
 
         totalFiles = files.count
         currentFileIndex = 0
@@ -95,24 +96,30 @@ final class SyncEngine: @unchecked Sendable {
 
         isIdleListening = false
         appendLog(L10n.logFilesReady(files.count))
+        queue.beginInstall(files, session: session)
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            let installed = self.installFilesSync(files, session: session)
+            let (installed, failed) = self.installFilesSync(files, session: session)
 
             DispatchQueue.main.async {
-                guard self.isCurrent(session) else { return }
+                guard self.isCurrent(session) else {
+                    queue.abortInstall(session: session)
+                    return
+                }
 
                 // Nur tatsächlich übertragene Dateien wandern nach Installed/,
-                // der Rest bleibt in Install/ und wird beim nächsten HotSync
-                // erneut angeboten.
+                // der Rest bleibt mit seinem Grund in Install/ und wird beim
+                // nächsten HotSync erneut angeboten.
                 for file in files {
                     if installed.contains(file) {
-                        queue.markInstalled(file)
                         self.appendLog(L10n.logFileInstalled(file.lastPathComponent))
                     } else {
-                        self.appendLog(L10n.logFileNotInstalled(file.lastPathComponent))
+                        let reason = failed[file.lastPathComponent] ?? .notConfirmed
+                        self.appendLog(L10n.logFileNotInstalled(file.lastPathComponent,
+                                                                L10n.failureText(reason)))
                     }
                 }
+                queue.finishInstall(session: session, installed: installed, failed: failed)
 
                 self.currentFileIndex = self.totalFiles
                 self.currentFileName = ""
@@ -196,7 +203,7 @@ final class SyncEngine: @unchecked Sendable {
     private func runPilotXfer(
         _ arguments: [String],
         session: Int,
-        onLine: @escaping (String) -> Void,
+        onLine: @escaping (_ line: String, _ fromStderr: Bool) -> Void,
         isDone: @escaping () -> Bool
     ) -> RunResult {
         guard let pilotXferURL = findPilotXfer() else {
@@ -219,18 +226,20 @@ final class SyncEngine: @unchecked Sendable {
         let wakeUp = DispatchSemaphore(value: 0)
         let lines = LineCollector()
 
-        func attach(_ pipe: Pipe) {
+        // stdout und stderr getrennt: pilot-xfer meldet Fehler auf stderr,
+        // die Dateinamen auf stdout (siehe InstallTranscript)
+        func attach(_ pipe: Pipe, fromStderr: Bool) {
             pipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
                 for line in lines.append(data, from: ObjectIdentifier(pipe)) {
-                    onLine(line)
+                    onLine(line, fromStderr)
                 }
                 wakeUp.signal()
             }
         }
-        attach(outputPipe)
-        attach(errorPipe)
+        attach(outputPipe, fromStderr: false)
+        attach(errorPipe, fromStderr: true)
         process.terminationHandler = { _ in wakeUp.signal() }
 
         processLock.lock()
@@ -283,8 +292,8 @@ final class SyncEngine: @unchecked Sendable {
 
         outputPipe.fileHandleForReading.readabilityHandler = nil
         errorPipe.fileHandleForReading.readabilityHandler = nil
-        for line in lines.flush() {
-            onLine(line)
+        for (source, line) in lines.flush() {
+            onLine(line, source == ObjectIdentifier(errorPipe))
         }
         return result
     }
@@ -303,7 +312,7 @@ final class SyncEngine: @unchecked Sendable {
         let result = runPilotXfer(
             ["-p", "usb:", "-l"],
             session: session,
-            onLine: { [weak self] line in
+            onLine: { [weak self] line, _ in
                 connected.set()
                 DispatchQueue.main.async {
                     guard let self, self.isCurrent(session) else { return }
@@ -337,8 +346,10 @@ final class SyncEngine: @unchecked Sendable {
     }
 
     /// Überträgt alle Dateien in einer pilot-xfer-Sitzung und liefert die
-    /// Dateien zurück, deren Installation pilot-xfer bestätigt hat.
-    private func installFilesSync(_ files: [URL], session: Int) -> Set<URL> {
+    /// Dateien, deren Installation pilot-xfer bestätigt hat, und den Grund
+    /// für jede andere.
+    private func installFilesSync(_ files: [URL], session: Int)
+        -> (installed: Set<URL>, failed: [String: InstallFailure]) {
         DispatchQueue.main.async {
             guard self.isCurrent(session) else { return }
             self.currentFileName = files.first?.lastPathComponent ?? ""
@@ -349,8 +360,8 @@ final class SyncEngine: @unchecked Sendable {
         let result = runPilotXfer(
             ["-p", "usb:", "-i"] + files.map(\.path),
             session: session,
-            onLine: { [weak self] line in
-                transcript.consume(line)
+            onLine: { [weak self] line, fromStderr in
+                transcript.consume(line, fromStderr: fromStderr)
                 let confirmed = transcript.confirmed.count
                 let current = transcript.current
                 DispatchQueue.main.async {
@@ -379,7 +390,8 @@ final class SyncEngine: @unchecked Sendable {
             }
         }
 
-        return Set(files.filter { transcript.confirmed.contains($0.lastPathComponent) })
+        let installed = Set(files.filter { transcript.confirmed.contains($0.lastPathComponent) })
+        return (installed, transcript.failures)
     }
 
     private func findPilotXfer() -> URL? {
@@ -463,94 +475,17 @@ final class LineCollector: @unchecked Sendable {
         return lines
     }
 
-    /// Liefert, was nach dem Prozessende noch ohne Zeilenende im Puffer steht.
-    func flush() -> [String] {
+    /// Liefert, was nach dem Prozessende noch ohne Zeilenende im Puffer
+    /// steht - mit der Pipe, aus der es kam.
+    func flush() -> [(source: ObjectIdentifier, line: String)] {
         lock.lock()
         defer { lock.unlock() }
 
-        let rest = buffers.values
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let rest = buffers
+            .map { (source: $0.key, line: $0.value.trimmingCharacters(in: .whitespaces)) }
+            .filter { !$0.line.isEmpty }
         buffers.removeAll()
         return rest
-    }
-}
-
-/// Wertet die Ausgabe von `pilot-xfer -i datei1 datei2 ...` aus
-/// (pilot-link src/pilot-xfer.c, palm_install_internal):
-///
-///     Installing 'a.prc'... Installing 'a.prc' ... (1234 bytes)   1 KiB total.
-///     ERROR: pi_file_install failed (...)        <- Übertragung gescheitert
-///     ERROR: Unable to open '/pfad/b.prc'!       <- Datei nicht lesbar
-///     Thank you for using pilot-link.            <- Sitzung beendet
-///
-/// "KiB total." folgt nur auf eine erfolgreiche Übertragung - nur dann gilt
-/// eine Datei als installiert.
-final class InstallTranscript: @unchecked Sendable {
-    private let lock = NSLock()
-    private let expected: Set<String>
-    private var currentName: String?
-    private var confirmedNames: Set<String> = []
-    private var failedNames: Set<String> = []
-    private var ended = false
-    private var output = false
-
-    init(expected: [String]) {
-        self.expected = Set(expected)
-    }
-
-    var confirmed: Set<String> {
-        lock.lock()
-        defer { lock.unlock() }
-        return confirmedNames
-    }
-
-    var current: String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return currentName
-    }
-
-    var sawOutput: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return output
-    }
-
-    /// Sitzung vorbei: pilot-xfer hat sich verabschiedet oder jede Datei
-    /// ist bestätigt bzw. gescheitert.
-    var isComplete: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return ended || confirmedNames.union(failedNames).isSuperset(of: expected)
-    }
-
-    func consume(_ line: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        output = true
-
-        if let name = Self.quoted(in: line, after: "Installing '") {
-            currentName = name
-        }
-        if line.contains("KiB total."), let name = currentName {
-            confirmedNames.insert(name)
-            currentName = nil
-        } else if let path = Self.quoted(in: line, after: "Unable to open '") {
-            failedNames.insert((path as NSString).lastPathComponent)
-        } else if line.contains("ERROR"), let name = currentName {
-            failedNames.insert(name)
-            currentName = nil
-        }
-        if line.contains("Thank you for using pilot-link") || line.contains("CANCEL") {
-            ended = true
-        }
-    }
-
-    private static func quoted(in line: String, after prefix: String) -> String? {
-        guard let start = line.range(of: prefix),
-              let end = line[start.upperBound...].firstIndex(of: "'") else { return nil }
-        return String(line[start.upperBound..<end])
     }
 }
 

@@ -26,7 +26,10 @@ The licenses of the included pilot-link, libusb and popt are in
 ## Features
 
 - **Menu bar app** (SwiftUI) &ndash; always ready, no Dock icon
-- **Install queue** &ndash; `.prc`/`.pdb` files via drag & drop, double-click in the Finder, or the install folder
+- **Install queue** &ndash; `.prc`/`.pdb`/`.pqa` files via drag & drop, double-click in the Finder, or the install folder; the queue always shows the folder's content, whichever way a file got there
+- **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, `.prc` holding a record database, …) are marked red and never sent
+- **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
+- **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
 - **Automatic waiting** &ndash; as soon as files are queued, `pilot-xfer` starts and waits for the Palm
 - **One HotSync for everything** &ndash; all queued files are transferred in a single `pilot-xfer` session
 - **Verified installs** &ndash; a file only counts as installed when `pilot-xfer` confirmed its transfer; anything else stays queued for the next HotSync
@@ -63,6 +66,8 @@ The licenses of the included pilot-link, libusb and popt are in
 ```
 
 ## Building
+
+Unit tests (file checks, pilot-xfer transcript): `./Scripts/test.sh`
 
 Requirements: macOS 14+, Swift command line tools, and `pilot-xfer` / `pilot-install-user`
 from [pilot-link](https://github.com/desrod/pilot-link) in `~/.local/bin/`.

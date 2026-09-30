@@ -8,8 +8,19 @@ let package = Package(
         .macOS(.v14)
     ],
     targets: [
+        // file checks and pilot-xfer transcript: no UI, unit-tested
+        .target(
+            name: "HotSyncCore",
+            path: "Sources/HotSyncCore"
+        ),
+        .testTarget(
+            name: "HotSyncCoreTests",
+            dependencies: ["HotSyncCore"],
+            path: "Tests/HotSyncCoreTests"
+        ),
         .executableTarget(
             name: "HotSync",
+            dependencies: ["HotSyncCore"],
             path: "Sources/HotSync",
             linkerSettings: [
                 .linkedFramework("AppKit"),

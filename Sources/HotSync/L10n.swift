@@ -1,4 +1,5 @@
 import Foundation
+import HotSyncCore
 
 enum Language: String, CaseIterable {
     case de, en
@@ -77,6 +78,58 @@ enum L10n {
     static var queueLabel: String { s("Warteschlange", "Queue") }
     static var queueEmpty: String { s(".prc/.pdb-Dateien hierher ziehen", "Drop .prc/.pdb files here") }
     static func queueFiles(_ n: Int) -> String { s("\(n) Dateien", "\(n) files") }
+    static func queueFilesInvalid(_ n: Int, _ invalid: Int) -> String { s(
+        "\(n) Dateien, \(invalid) nicht installierbar", "\(n) files, \(invalid) not installable"
+    ) }
+    static var queueRemoveHelp: String { s("In den Papierkorb legen", "Move to Trash") }
+    static var queueReady: String { s("Bereit – wird beim nächsten HotSync installiert",
+                                      "Ready – installed with the next HotSync") }
+    static var queueInstalling: String { s("Wird übertragen …", "Transferring …") }
+    static var queueWaiting: String { s("Wartet auf HotSync", "Waiting for HotSync") }
+    static func queueFailed(_ reason: String) -> String { s(
+        "Nicht installiert: \(reason) – wird beim nächsten HotSync erneut versucht",
+        "Not installed: \(reason) – tried again with the next HotSync"
+    ) }
+    static func queueInvalid(_ reason: String) -> String { s(
+        "Wird nicht übertragen: \(reason)", "Not sent: \(reason)"
+    ) }
+    static func queueDatabase(_ name: String, _ type: String, _ creator: String, _ size: String) -> String {
+        "\(name) · \(type)/\(creator) · \(size)"
+    }
+
+    static func problemText(_ problem: PalmDatabaseFile.Problem) -> String {
+        switch problem {
+        case .unsupportedExtension(let ext):
+            return ext.isEmpty
+                ? s("keine Palm-Datei (.prc, .pdb, .pqa)", "not a Palm file (.prc, .pdb, .pqa)")
+                : s("keine Palm-Datei (.\(ext))", "not a Palm file (.\(ext))")
+        case .unreadable: return s("Datei nicht lesbar", "file cannot be read")
+        case .tooSmall: return s("zu klein für eine Palm-Datenbank", "too small for a Palm database")
+        case .invalidName: return s("ungültiger Datenbankname im Header", "invalid database name in the header")
+        case .kindMismatch(let expectedResource):
+            return expectedResource
+                ? s(".prc, enthält aber eine Record-Datenbank (.pdb)", ".prc, but holds a record database (.pdb)")
+                : s("enthält eine Ressourcen-Datenbank (.prc)", "holds a resource database (.prc)")
+        case .truncated: return s("unvollständig (abgeschnitten)", "incomplete (truncated)")
+        }
+    }
+
+    static func failureText(_ failure: InstallFailure) -> String {
+        switch failure {
+        case .protectedOnPalm:
+            return s("auf dem Palm geschützt oder in Benutzung (z. B. eine aktive Erweiterung wie DateFix: dort erst ausschalten)",
+                     "protected or in use on the Palm (e.g. an active extension such as DateFix: turn it off there first)")
+        case .openOnPalm: return s("auf dem Palm geöffnet – App dort schließen", "open on the Palm – close the app there")
+        case .readOnly: return s("auf dem Palm schreibgeschützt (ROM)", "read-only on the Palm (ROM)")
+        case .notEnoughSpace: return s("nicht genug Speicher auf dem Palm", "not enough memory on the Palm")
+        case .tooLarge: return s("zu groß für den Palm", "too large for the Palm")
+        case .unreadableFile: return s("Datei auf dem Mac nicht lesbar", "file cannot be read on the Mac")
+        case .palmError(let code, _): return s("Palm-Fehler \(code)", "Palm error \(code)")
+        case .other(let line): return line
+        case .notConfirmed: return s("Übertragung nicht bestätigt (Verbindung getrennt?)",
+                                     "transfer not confirmed (connection lost?)")
+        }
+    }
 
     // MARK: - MainView Installed
 
@@ -174,9 +227,9 @@ enum L10n {
     static func logAllInstalled(_ n: Int) -> String { s("Alle \(n) Datei(en) installiert!", "All \(n) file(s) installed!") }
     static func logFileProgress(_ i: Int, _ n: Int, _ name: String) -> String { "[\(i)/\(n)] \(name)" }
     static func logFileInstalled(_ name: String) -> String { s("\(name) installiert!", "\(name) installed!") }
-    static func logFileNotInstalled(_ name: String) -> String { s(
-        "\(name) NICHT installiert — bleibt für den nächsten HotSync in der Warteschlange",
-        "\(name) NOT installed — stays queued for the next HotSync"
+    static func logFileNotInstalled(_ name: String, _ reason: String) -> String { s(
+        "\(name) NICHT installiert (\(reason)) — bleibt für den nächsten HotSync in der Warteschlange",
+        "\(name) NOT installed (\(reason)) — stays queued for the next HotSync"
     ) }
     static func logInstalledPartially(_ ok: Int, _ n: Int) -> String { s(
         "\(ok) von \(n) Datei(en) installiert",
@@ -212,6 +265,14 @@ enum L10n {
 
     static func logFileMoved(_ name: String) -> String { s("Verschoben: \(name) → Installed/", "Moved: \(name) → Installed/") }
     static func logMoveFailed(_ err: String) -> String { s("Move fehlgeschlagen: \(err)", "Move failed: \(err)") }
+    static func logFileRemoved(_ name: String) -> String { s("In den Papierkorb: \(name)", "Moved to Trash: \(name)") }
+    static func logRemoveFailed(_ name: String, _ err: String) -> String { s(
+        "\(name) konnte nicht entfernt werden: \(err)", "Could not remove \(name): \(err)"
+    ) }
+    static func logCopyFailed(_ name: String, _ err: String) -> String { s(
+        "\(name) konnte nicht in den Install-Ordner kopiert werden: \(err)",
+        "Could not copy \(name) to the Install folder: \(err)"
+    ) }
 
     // MARK: - DebugLog
 

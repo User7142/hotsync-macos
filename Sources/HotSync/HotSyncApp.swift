@@ -155,16 +155,7 @@ final class AppState {
     }
 
     func rescanInstallFolder() {
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(
-            at: installQueue.installDir,
-            includingPropertiesForKeys: nil
-        ) else { return }
-
-        let prcFiles = files.filter { InstallQueue.supportedExtensions.contains($0.pathExtension.lowercased()) }
-        for file in prcFiles {
-            installQueue.enqueue(file)
-        }
+        installQueue.refresh()
     }
 
     private func restartFileWatcher() {
@@ -208,19 +199,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Wird aufgerufen wenn .prc-Dateien per Doppelklick geöffnet werden
     func application(_ application: NSApplication, open urls: [URL]) {
-        let fm = FileManager.default
-        for url in urls {
-            guard InstallQueue.supportedExtensions.contains(url.pathExtension.lowercased()) else { continue }
-
-            let dest = appState.installQueue.installDir.appendingPathComponent(url.lastPathComponent)
-            try? fm.removeItem(at: dest)
-            do {
-                try fm.copyItem(at: url, to: dest)
-                appState.installQueue.enqueue(dest)
-            } catch {
-                appState.installQueue.enqueue(url)
-            }
-        }
+        appState.installQueue.add(urls)
         appState.startListeningIfReady()
     }
 
