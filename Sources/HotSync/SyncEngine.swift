@@ -140,6 +140,19 @@ final class SyncEngine: @unchecked Sendable {
         logLines.removeAll()
     }
 
+    /// Beendet Sitzung und pilot-xfer und kehrt erst zurück, wenn kein
+    /// Prozess mehr läuft - danach darf ein anderes pilot-Werkzeug die
+    /// USB-Verbindung öffnen (z. B. pilot-install-user beim Einrichten).
+    /// Nicht auf dem Main-Thread aufrufen.
+    func stopAndWait() {
+        DispatchQueue.main.sync {
+            _ = self.beginSession()
+            self.isIdleListening = false
+            self.state = .idle
+        }
+        killCurrentProcess()
+    }
+
     func cancelSync(silent: Bool = false) {
         _ = beginSession()          // laufender Durchlauf ist ab jetzt ungültig
         isIdleListening = false

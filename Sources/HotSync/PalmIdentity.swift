@@ -92,8 +92,12 @@ final class PalmIdentity: @unchecked Sendable {
         DebugLog.shared.log(L10n.logPilotInstallCancelled, source: "Palm")
     }
 
-    /// Setzt den Palm-Username. Blockiert bis der Palm verbindet.
-    /// Gibt (success, userId) zurueck.
+    /// Setzt den Palm-Username. Blockiert, bis der Palm verbunden, der Name
+    /// übertragen und pilot-install-user beendet ist (oder nach 60 Sekunden).
+    ///
+    /// Erfolg heißt: der Prozess hat sich mit Status 0 beendet und keine
+    /// Fehlermeldung ausgegeben. "-q" unterdrückt jede Ausgabe, darauf darf
+    /// man also nicht warten - das Prozessende weckt den Wartenden.
     func setUsername(_ name: String, userId: UInt? = nil) -> (success: Bool, userId: UInt) {
         guard let tool = findPilotInstallUser() else {
             DebugLog.shared.log(L10n.logPilotInstallNotFound, source: "Palm")
@@ -108,52 +112,66 @@ final class PalmIdentity: @unchecked Sendable {
         process.arguments = ["-p", "usb:", "-u", name, "-i", "\(resolvedUserId)", "-q"]
 
         let outputPipe = Pipe()
+        let errorPipe = Pipe()
         process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        process.standardError = errorPipe
 
-        let completionSemaphore = DispatchSemaphore(value: 0)
-        var gotOutput = false
+        let wakeUp = DispatchSemaphore(value: 0)
+        let collected = OutputBuffer()
 
-        outputPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
-            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                DebugLog.shared.log("pilot-install-user: \(trimmed)", source: "Palm")
-                gotOutput = true
-                completionSemaphore.signal()
+        func attach(_ pipe: Pipe) {
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
+                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    DebugLog.shared.log("pilot-install-user: \(trimmed)", source: "Palm")
+                    collected.append(trimmed)
+                    wakeUp.signal()
+                }
             }
         }
+        attach(outputPipe)
+        attach(errorPipe)
+        process.terminationHandler = { _ in wakeUp.signal() }
 
         do {
             try process.run()
+            activeProcess = process
             DebugLog.shared.log(L10n.logPilotInstallStarted, source: "Palm")
 
-            // Warte auf Output oder Timeout (60 Sek.)
-            let result = completionSemaphore.wait(timeout: .now() + 60)
-
-            // pilot-install-user hängt nach Completion — wie pilot-xfer: kurz warten, dann killen
-            if gotOutput {
-                Thread.sleep(forTimeInterval: 1.0)
+            // Bis zum Prozessende oder zu einer Fehlerausgabe, höchstens 60 s
+            let deadline = Date().addingTimeInterval(60)
+            while process.isRunning, !collected.hasError, Date() < deadline {
+                _ = wakeUp.wait(timeout: .now() + 1)
             }
+            // Letzte Ausgabe kann noch in der Pipe stecken
+            Thread.sleep(forTimeInterval: 0.3)
 
+            let ended = !process.isRunning
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
                 process.waitUntilExit()
             }
-
             outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            activeProcess = nil
 
-            if gotOutput || result == .timedOut {
+            let success = ended && process.terminationStatus == 0 && !collected.hasError
+            DebugLog.shared.log(
+                "pilot-install-user: \(success ? "OK" : "fehlgeschlagen") (beendet: \(ended), Status \(process.terminationStatus))",
+                source: "Palm")
+            if success {
                 DispatchQueue.main.async {
                     self.currentPalmName = name
                 }
-                return (true, resolvedUserId)
             }
-            return (false, resolvedUserId)
+            return (success, resolvedUserId)
         } catch {
             DebugLog.shared.log(L10n.logSetError("\(error)"), source: "Palm")
             outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            activeProcess = nil
             return (false, resolvedUserId)
         }
     }
@@ -215,5 +233,24 @@ final class PalmIdentity: @unchecked Sendable {
         }
 
         return nil
+    }
+}
+
+/// Sammelt die Ausgabe von pilot-install-user threadsicher und erkennt
+/// Fehlermeldungen ("Error accepting data on usb:" u. ä.).
+final class OutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func append(_ line: String) {
+        lock.lock()
+        text += line + "\n"
+        lock.unlock()
+    }
+
+    var hasError: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return text.localizedCaseInsensitiveContains("error")
     }
 }

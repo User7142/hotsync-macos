@@ -177,6 +177,7 @@ struct DeviceListView: View {
 
             HStack(spacing: 12) {
                 Button(L10n.cancel) {
+                    if isSetting { appState.palmIdentity.cancelActiveProcess() }
                     resetAddState()
                     addMode = nil
                 }
@@ -185,13 +186,21 @@ struct DeviceListView: View {
                 Button(L10n.createProfileOnly) {
                     createLocalProfile()
                 }
-                .disabled(newUsername.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(newUsername.trimmingCharacters(in: .whitespaces).isEmpty || isSetting)
 
                 Button(L10n.setOnPalm) {
                     setOnPalm()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(newUsername.trimmingCharacters(in: .whitespaces).isEmpty || isSetting)
+            }
+            .fixedSize()
+
+            if let error = readError {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
             }
 
             if isSetting {
@@ -204,7 +213,7 @@ struct DeviceListView: View {
             }
         }
         .padding(30)
-        .frame(width: 380)
+        .frame(width: 480)
         .onAppear { isNewNameFocused = true }
     }
 
@@ -286,11 +295,17 @@ struct DeviceListView: View {
         let name = newUsername.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
         isSetting = true
+        readError = nil
+        // Der Leerlauf-Listener (pilot-xfer -l) würde dem Einrichten die
+        // USB-Verbindung streitig machen: erst anhalten, dann einrichten.
+        appState.isSettingUsername = true
 
         DispatchQueue.global(qos: .userInitiated).async {
+            appState.syncEngine.stopAndWait()
             let result = appState.palmIdentity.setUsername(name)
             DispatchQueue.main.async {
                 isSetting = false
+                appState.isSettingUsername = false
                 if result.success {
                     let note = newDeviceNote.trimmingCharacters(in: .whitespaces)
                     let profile = appState.deviceManager.addProfile(
@@ -302,6 +317,7 @@ struct DeviceListView: View {
                     addMode = nil
                 } else {
                     readError = L10n.connectionFailed
+                    appState.startListeningIfReady()
                 }
             }
         }
@@ -310,11 +326,14 @@ struct DeviceListView: View {
     private func readFromPalm() {
         isReading = true
         readError = nil
+        appState.isSettingUsername = true
 
         DispatchQueue.global(qos: .userInitiated).async {
+            appState.syncEngine.stopAndWait()
             let info = appState.palmIdentity.checkUsername()
             DispatchQueue.main.async {
                 isReading = false
+                appState.isSettingUsername = false
                 if let info, !info.name.isEmpty {
                     let profile = appState.deviceManager.addProfile(
                         username: info.name, userId: info.userId,
@@ -325,6 +344,7 @@ struct DeviceListView: View {
                     addMode = nil
                 } else {
                     readError = L10n.noUsernameFound
+                    appState.startListeningIfReady()
                 }
             }
         }
