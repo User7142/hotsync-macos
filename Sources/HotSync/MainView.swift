@@ -31,7 +31,9 @@ struct MainView: View {
                 emptyState
             }
         }
-        .frame(minWidth: 560, minHeight: 480)
+        // Den ganzen Fensterraum nutzen, Inhalt oben beginnen - sonst
+        // zentriert SwiftUI den Block, sobald das Fenster größer ist.
+        .frame(minWidth: 560, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity, alignment: .top)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
             return true

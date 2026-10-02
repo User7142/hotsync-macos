@@ -21,10 +21,13 @@ struct TabDetailView: View {
                 InstalledSection(queue: queue)
             }
             if let status = appState.status(tab.id) {
+                // Das Log bekommt den restlichen Platz im Fenster
                 TabLogSection(log: status.log)
+                    .frame(maxHeight: .infinity)
             }
         }
         .padding()
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: - Kopf
@@ -406,14 +409,10 @@ struct TabLogSection: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 2) {
                 if log.lines.isEmpty {
-                    HStack {
-                        Spacer()
-                        Text(L10n.logEmpty)
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                            .padding(.vertical, 8)
-                        Spacer()
-                    }
+                    Text(L10n.logEmpty)
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollViewReader { proxy in
                         ScrollView {
@@ -440,6 +439,7 @@ struct TabLogSection: View {
                 }
             }
             .padding(4)
+            .frame(maxHeight: .infinity)
         } label: {
             HStack {
                 Label(L10n.logLabel, systemImage: "text.alignleft")
