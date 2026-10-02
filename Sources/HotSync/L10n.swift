@@ -84,10 +84,12 @@ enum L10n {
 
     static var queueLabel: String { s("Warteschlange", "Queue") }
     static var queueEmpty: String { s(".prc/.pdb-Dateien hierher ziehen", "Drop .prc/.pdb files here") }
-    static func queueFiles(_ n: Int) -> String { s("\(n) Dateien", "\(n) files") }
-    static func queueFilesInvalid(_ n: Int, _ invalid: Int) -> String { s(
-        "\(n) Dateien, \(invalid) nicht installierbar", "\(n) files, \(invalid) not installable"
-    ) }
+    static func queueFiles(_ n: Int) -> String {
+        n == 1 ? s("1 Datei", "1 file") : s("\(n) Dateien", "\(n) files")
+    }
+    static func queueFilesInvalid(_ n: Int, _ invalid: Int) -> String {
+        "\(queueFiles(n)), " + s("\(invalid) nicht installierbar", "\(invalid) not installable")
+    }
     static var queueRemoveHelp: String { s("In den Papierkorb legen", "Move to Trash") }
     static var queueReady: String { s("Bereit – wird beim nächsten HotSync installiert",
                                       "Ready – installed with the next HotSync") }
