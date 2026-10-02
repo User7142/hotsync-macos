@@ -22,7 +22,6 @@ struct MainView: View {
             }
 
             tabBar
-            Divider()
 
             if let id = appState.selectedTabId, let tab = appState.tabStore.tab(id) {
                 TabDetailView(tab: tab, onEdit: { editingTab = tab })
@@ -98,30 +97,42 @@ struct MainView: View {
 
     // MARK: - Tab-Leiste
 
+    /// Reiter wie in Safari/Finder: Die Leiste ist leicht abgedunkelt, der
+    /// gewählte Reiter hat die Fensterfarbe und ist nach unten offen - er
+    /// geht in den Inhalt darunter über. Die Grundlinie liegt unter allen
+    /// Reitern; der gewählte deckt sie mit seiner Fläche ab.
     private var tabBar: some View {
-        HStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(appState.tabStore.tabs) { tab in
-                        TabButton(tab: tab, isSelected: tab.id == appState.selectedTabId) {
-                            appState.selectedTabId = tab.id
+        ZStack(alignment: .bottom) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(height: 1)
+
+            HStack(alignment: .bottom, spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .bottom, spacing: 2) {
+                        ForEach(appState.tabStore.tabs) { tab in
+                            TabButton(tab: tab, isSelected: tab.id == appState.selectedTabId) {
+                                appState.selectedTabId = tab.id
+                            }
                         }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                Button {
+                    editingTab = newTab()
+                } label: {
+                    Image(systemName: "plus")
+                        .padding(6)
+                }
+                .buttonStyle(.borderless)
+                .help(L10n.tabAddHelp)
+                .disabled(!appState.deviceManager.hasProfiles)
+                .padding(.trailing, 12)
+                .padding(.bottom, 4)
             }
-            Button {
-                editingTab = newTab()
-            } label: {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(.borderless)
-            .help(L10n.tabAddHelp)
-            .disabled(!appState.deviceManager.hasProfiles)
-            .padding(.trailing, 12)
         }
-        .background(.bar)
+        .background(Color.primary.opacity(0.05))
     }
 
     private var emptyState: some View {
@@ -167,13 +178,15 @@ struct MainView: View {
     }
 }
 
-// MARK: - Tab-Knopf
+// MARK: - Reiter
 
 private struct TabButton: View {
     @Environment(AppState.self) var appState
     let tab: SyncTab
     let isSelected: Bool
     let action: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
@@ -182,6 +195,8 @@ private struct TabButton: View {
                     .fill(dotColor)
                     .frame(width: 7, height: 7)
                 Text(appState.title(of: tab))
+                    .fontWeight(isSelected ? .medium : .regular)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
                     .lineLimit(1)
                 if tab.autoListen {
                     Image(systemName: "antenna.radiowaves.left.and.right")
@@ -189,12 +204,31 @@ private struct TabButton: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(background)
+            .overlay {
+                if isSelected {
+                    TabOutline(radius: Self.radius)
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                }
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+
+    private static let radius: CGFloat = 7
+
+    @ViewBuilder
+    private var background: some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
+        if isSelected {
+            shape.fill(Color(nsColor: .windowBackgroundColor))
+        } else if isHovered {
+            shape.fill(Color.primary.opacity(0.06))
+        }
     }
 
     private var dotColor: Color {
@@ -210,6 +244,25 @@ private struct TabButton: View {
             case .stopped, nil: return .gray
             }
         }
+    }
+}
+
+/// Umriss eines Reiters: links, oben (abgerundet) und rechts - unten offen,
+/// damit der gewählte Reiter in den Inhalt übergeht.
+private struct TabOutline: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
+                    tangent2End: CGPoint(x: rect.minX + radius, y: rect.minY), radius: radius)
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY),
+                    tangent2End: CGPoint(x: rect.maxX, y: rect.minY + radius), radius: radius)
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        return path
     }
 }
 
