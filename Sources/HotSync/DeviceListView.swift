@@ -119,7 +119,7 @@ struct DeviceListView: View {
                             .foregroundStyle(.secondary)
                     }
                     if let lastSync = profile.lastSyncAt {
-                        Text("Sync: \(lastSync, style: .relative)")
+                        Text("Sync: \(lastSync.formatted(date: .numeric, time: .shortened))")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }

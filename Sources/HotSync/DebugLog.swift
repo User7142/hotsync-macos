@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import os
 
 /// File-basierter Logger, unabhängig von SwiftUI @Observable.
@@ -24,6 +25,7 @@ final class DebugLog: @unchecked Sendable {
         // Log-Datei bei jedem App-Start leeren
         try? "".write(to: logFileURL, atomically: true, encoding: .utf8)
         writeToFile(L10n.logAppStarted)
+        publish(L10n.logAppStarted)
     }
 
     func log(_ message: String, source: String = "App") {
@@ -35,15 +37,17 @@ final class DebugLog: @unchecked Sendable {
 
         // File
         writeToFile(line)
+
+        // Live-Anzeige im Hauptfenster
+        publish(line)
     }
 
-    /// Liest die letzten N Zeilen aus der Log-Datei.
-    func readLastLines(_ count: Int = 200) -> [String] {
-        guard let content = try? String(contentsOf: logFileURL, encoding: .utf8) else {
-            return []
+    /// Reicht eine Zeile an die Live-Anzeige weiter. LiveLog wird nur auf dem
+    /// Main-Thread geändert, log() darf aber von jedem Thread kommen.
+    private func publish(_ line: String) {
+        DispatchQueue.main.async {
+            LiveLog.shared.append(line)
         }
-        let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
-        return Array(lines.suffix(count))
     }
 
     private func writeToFile(_ line: String) {
@@ -57,6 +61,36 @@ final class DebugLog: @unchecked Sendable {
                     try? data.write(to: self.logFileURL)
                 }
             }
+        }
+    }
+}
+
+/// Die letzten Log-Zeilen für die Live-Anzeige im Hauptfenster.
+///
+/// Beobachtbar, damit SwiftUI jede neue Zeile sofort zeichnet - statt die
+/// komplette Log-Datei per Timer immer wieder einzulesen. Die Datei wird beim
+/// App-Start geleert, der Puffer zeigt also dasselbe wie ihr Ende.
+/// Nur auf dem Main-Thread ändern (siehe DebugLog.publish).
+@Observable
+final class LiveLog {
+    struct Line: Identifiable {
+        let id: Int
+        let text: String
+    }
+
+    static let shared = LiveLog()
+
+    /// So viele Zeilen zeigt das Hauptfenster.
+    static let capacity = 100
+
+    private(set) var lines: [Line] = []
+    private var nextId = 0
+
+    fileprivate func append(_ text: String) {
+        lines.append(Line(id: nextId, text: text))
+        nextId += 1
+        if lines.count > Self.capacity {
+            lines.removeFirst(lines.count - Self.capacity)
         }
     }
 }

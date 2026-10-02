@@ -132,7 +132,6 @@ This is a hobby project that does its job for me, but it has rough edges:
   reported as installed.
 - **Thread safety.** `PalmIdentity` is `@unchecked Sendable` and shares state between a
   background queue and the main thread without locks or actors.
-- **UI refresh via timer.** The main view refreshes every 0.5 s instead of purely reactively.
 - **No real two-way sync.** The app only installs files. Addresses, dates and memos are not
   synced like with the original Palm Desktop, and the "Backups" folder is not used yet.
 - `USBMonitor.swift` is currently unused.

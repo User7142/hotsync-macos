@@ -17,12 +17,10 @@ final class AppState {
     // Username-Dialog (für Rename-Flow, nicht mehr Ersteinrichtung)
     var isSettingUsername = false
 
-    // Sprachumschaltung
-    var language: Language = L10n.language {
-        didSet {
-            UserDefaults.standard.set(language.rawValue, forKey: "appLanguage")
-            L10n.language = language
-        }
+    // Sprachumschaltung - gespeichert und beobachtet in LanguageSetting
+    var language: Language {
+        get { L10n.language }
+        set { L10n.language = newValue }
     }
 
     func setup() {

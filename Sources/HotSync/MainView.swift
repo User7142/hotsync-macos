@@ -5,11 +5,7 @@ import HotSyncCore
 struct MainView: View {
     @Environment(AppState.self) var appState
 
-    // Timer-basierter Refresh — umgeht @Observable-Tracking-Probleme
-    @State private var tick = 0
-    @State private var fileLogLines: [String] = []
-
-    private let refreshTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    private let liveLog = LiveLog.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,11 +33,6 @@ struct MainView: View {
             handleDrop(providers)
             return true
         }
-        .onReceive(refreshTimer) { _ in
-            // Timer erzwingt UI-Refresh durch @State-Änderung
-            tick += 1
-            fileLogLines = DebugLog.shared.readLastLines(100)
-        }
         .sheet(isPresented: Binding(
             get: { appState.showDeviceList },
             set: { appState.showDeviceList = $0 }
@@ -67,14 +58,11 @@ struct MainView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                // tick erzwingt Text-Refresh
                 Text(statusText)
                     .font(.headline)
-                    .id("status-\(tick)")
                 Text(statusDetail)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .id("detail-\(tick)")
             }
 
             Spacer()
@@ -163,7 +151,6 @@ struct MainView: View {
                 }
             }
             .padding(4)
-            .id("progress-\(tick)")
         } label: {
             Label(L10n.progressLabel, systemImage: "arrow.triangle.2.circlepath")
         }
@@ -195,7 +182,6 @@ struct MainView: View {
                 }
             }
             .padding(4)
-            .id("queue-\(tick)")
         } label: {
             HStack {
                 Label(L10n.queueLabel, systemImage: "tray.full")
@@ -300,7 +286,9 @@ struct MainView: View {
                                 .font(.callout)
                                 .lineLimit(1)
                             Spacer()
-                            Text(item.date, style: .relative)
+                            // Feste Zeitangabe statt .relative: eine relative Angabe
+                            // zählt Sekunden und zeichnet das Fenster jede Sekunde neu.
+                            Text(item.date.formatted(date: .numeric, time: .shortened))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -309,7 +297,6 @@ struct MainView: View {
                 }
             }
             .padding(4)
-            .id("installed-\(tick)")
         } label: {
             Label(L10n.installedLabel, systemImage: "checkmark.circle")
         }
@@ -320,7 +307,7 @@ struct MainView: View {
     private var fileLogSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 2) {
-                if fileLogLines.isEmpty {
+                if liveLog.lines.isEmpty {
                     HStack {
                         Spacer()
                         Text(L10n.logEmpty)
@@ -333,20 +320,22 @@ struct MainView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 1) {
-                                ForEach(Array(fileLogLines.enumerated()), id: \.offset) { idx, line in
-                                    Text(line)
+                                ForEach(liveLog.lines) { line in
+                                    Text(line.text)
                                         .font(.system(.caption, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                         .lineLimit(2)
                                         .frame(maxWidth: .infinity, alignment: .leading)
-                                        .id(idx)
+                                        .id(line.id)
                                 }
                             }
                         }
                         .frame(maxHeight: .infinity)
-                        .onChange(of: fileLogLines.count) { _, newCount in
-                            if newCount > 0 {
-                                proxy.scrollTo(newCount - 1, anchor: .bottom)
+                        // Auf die letzte Zeile-ID achten, nicht auf die Anzahl:
+                        // Die bleibt bei vollem Puffer gleich.
+                        .onChange(of: liveLog.lines.last?.id) { _, lastId in
+                            if let lastId {
+                                proxy.scrollTo(lastId, anchor: .bottom)
                             }
                         }
                     }
@@ -358,10 +347,10 @@ struct MainView: View {
                 Label(L10n.logLabel, systemImage: "text.alignleft")
                     .foregroundStyle(.primary)
                 Spacer()
-                if !fileLogLines.isEmpty {
+                if !liveLog.lines.isEmpty {
                     Button(L10n.logCopy) {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(fileLogLines.joined(separator: "\n"), forType: .string)
+                        NSPasteboard.general.setString(liveLog.lines.map(\.text).joined(separator: "\n"), forType: .string)
                     }
                     .font(.caption)
                     .buttonStyle(.plain)

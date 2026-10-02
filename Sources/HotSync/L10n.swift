@@ -1,5 +1,6 @@
 import Foundation
 import HotSyncCore
+import Observation
 
 enum Language: String, CaseIterable {
     case de, en
@@ -16,14 +17,32 @@ enum Language: String, CaseIterable {
     }
 }
 
-enum L10n {
-    static var language: Language = {
+/// Die Anzeigesprache als beobachtbarer Zustand: Jede View, die einen
+/// L10n-Text liest, liest damit auch die Sprache und wird beim Umschalten
+/// neu gezeichnet - ohne dass die Views die Sprache selbst abfragen müssen.
+@Observable
+final class LanguageSetting: @unchecked Sendable {
+    static let shared = LanguageSetting()
+
+    var language: Language {
+        didSet { UserDefaults.standard.set(language.rawValue, forKey: "appLanguage") }
+    }
+
+    private init() {
         if let saved = UserDefaults.standard.string(forKey: "appLanguage"),
            let lang = Language(rawValue: saved) {
-            return lang
+            language = lang
+        } else {
+            language = .systemDefault
         }
-        return .systemDefault
-    }()
+    }
+}
+
+enum L10n {
+    static var language: Language {
+        get { LanguageSetting.shared.language }
+        set { LanguageSetting.shared.language = newValue }
+    }
 
     private static func s(_ de: String, _ en: String) -> String {
         language == .de ? de : en
