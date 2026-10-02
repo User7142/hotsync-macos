@@ -83,45 +83,133 @@ private func imageWithVersion(_ version: String?) -> Data {
 // MARK: - InstallFailure
 
 @Test func palmErrorCodes() {
-    #expect(InstallFailure.parse("ERROR: pi_file_install failed (-301, PalmOS 0x0009).")
-            == .protectedOnPalm)
-    #expect(InstallFailure.parse("ERROR: pi_file_install failed (-301, PalmOS 0x0010).")
-            == .notEnoughSpace)
-    #expect(InstallFailure.parse("ERROR: pi_file_install failed (-301, PalmOS 0x0007).")
-            == .openOnPalm)
-    #expect(InstallFailure.parse("ERROR: something else") == .other("ERROR: something else"))
+    #expect(InstallFailure.fromPalmOSError(0x09) == .protectedOnPalm)
+    #expect(InstallFailure.fromPalmOSError(0x10) == .notEnoughSpace)
+    #expect(InstallFailure.fromPalmOSError(0x07) == .openOnPalm)
+    #expect(InstallFailure.fromPalmOSError(0x0F) == .readOnly)
+    #expect(InstallFailure.fromPalmOSError(0x11) == .tooLarge)
+    #expect(InstallFailure.fromPalmOSError(0x02) == .palmError(code: 2))
 }
 
-// MARK: - InstallTranscript
+// MARK: - SessionEvent
 
-/// The order seen on 2026-09-30: stderr before the buffered stdout.
-@Test func errorBeforeItsFile() {
-    let t = InstallTranscript(expected: ["DateFix.prc"])
-    t.consume("ERROR: pi_file_install failed (-301, PalmOS 0x0009).", fromStderr: true)
-    #expect(t.isComplete)
-    t.consume("Installing 'DateFix.prc'...", fromStderr: false)
-    t.consume("Thank you for using pilot-link.", fromStderr: false)
-    #expect(t.confirmed.isEmpty)
-    #expect(t.failures == ["DateFix.prc": .protectedOnPalm])
+@Test func sessionEvents() {
+    #expect(SessionEvent.parse(#"{"event":"listening","port":"usb:"}"#) == .listening(port: "usb:"))
+    #expect(SessionEvent.parse(#"{"event":"timeout"}"#) == .timeout)
+    #expect(SessionEvent.parse(#"{"event":"connected","user":"m5152","userId":41981,"romVersion":68169728}"#)
+            == .connected(PalmUser(name: "m5152", userId: 41981), romVersion: 0x0410_3000))
+    #expect(SessionEvent.parse(#"{"event":"installed","file":"a.prc","bytes":1234}"#)
+            == .installed(file: "a.prc", bytes: 1234))
+    #expect(SessionEvent.parse(#"{"event":"finished"}"#) == .finished)
+    #expect(SessionEvent.parse(#"{"event":"error","stage":"bind","message":"unable"}"#)
+            == .error(stage: "bind", message: "unable"))
+    #expect(SessionEvent.parse(#"{"event":"userWritten","user":"Palm User","userId":4711}"#)
+            == .userWritten(PalmUser(name: "Palm User", userId: 4711)))
 }
 
-@Test func mixedSession() {
-    let t = InstallTranscript(expected: ["a.prc", "b.prc", "c.pdb", "d.prc"])
-    t.consume("ERROR: Unable to open '/Users/x/HotSync/T3/Install/b.prc'!", fromStderr: true)
-    t.consume("ERROR: pi_file_install failed (-301, PalmOS 0x0010).", fromStderr: true)
-    t.consume("Installing 'a.prc'... Installing 'a.prc' ... (1234 bytes)   1 KiB total.",
-              fromStderr: false)
-    t.consume("Installing 'c.pdb'... Installing 'd.prc'... Installing 'd.prc' ... (99 bytes)   1 KiB total.",
-              fromStderr: false)
-    #expect(t.isComplete)
-    #expect(t.confirmed == ["a.prc", "d.prc"])
-    #expect(t.failures == ["b.prc": .unreadableFile, "c.pdb": .notEnoughSpace])
+@Test func sessionFailures() {
+    #expect(SessionEvent.parse(#"{"event":"failed","file":"a.prc","reason":"palmError","error":-301,"palmOSError":9}"#)
+            == .failed(file: "a.prc", .protectedOnPalm))
+    #expect(SessionEvent.parse(#"{"event":"failed","file":"b.prc","reason":"unreadableFile"}"#)
+            == .failed(file: "b.prc", .unreadableFile))
+    #expect(SessionEvent.parse(#"{"event":"failed","file":"c.pdb","reason":"notEnoughSpace","needed":9,"available":1}"#)
+            == .failed(file: "c.pdb", .notEnoughSpace))
 }
 
-@Test func connectionLost() {
-    let t = InstallTranscript(expected: ["a.prc", "b.prc"])
-    t.consume("Installing 'a.prc'... Installing 'a.prc' ... (1234 bytes)   1 KiB total.",
-              fromStderr: false)
-    #expect(!t.isComplete)
-    #expect(t.failures == ["b.prc": .notConfirmed])
+@Test func brokenLines() {
+    #expect(SessionEvent.parse("Thank you for using pilot-link.") == nil)
+    #expect(SessionEvent.parse(#"{"event":"connected"}"#) == nil)
+    #expect(SessionEvent.parse(#"{"event":"somethingNew"}"#) == nil)
+}
+
+@Test func palmUserNames() {
+    // Windows-1252 from the Palm arrives as UTF-8 escaped by the tool
+    #expect(SessionEvent.parse(#"{"event":"connected","user":"M\u00fcller \u20ac","userId":7}"#)
+            == .connected(PalmUser(name: "Müller €", userId: 7), romVersion: 0))
+}
+
+// MARK: - PalmAdmission
+
+private let m515 = ProfileIdentity(id: UUID(), userId: 41981)
+private let t3 = ProfileIdentity(id: UUID(), userId: 88143)
+
+@Test func tabSessionAdmission() {
+    let all = [m515, t3]
+    #expect(PalmAdmission.decide(user: PalmUser(name: "m5152", userId: 41981),
+                                 expected: m515.id, candidates: [m515], profiles: all)
+            == .install(profile: m515.id))
+    #expect(PalmAdmission.decide(user: PalmUser(name: "T3", userId: 88143),
+                                 expected: m515.id, candidates: [m515], profiles: all)
+            == .wrongPalm(expected: m515.id, found: t3.id))
+    #expect(PalmAdmission.decide(user: PalmUser(name: "other", userId: 5),
+                                 expected: m515.id, candidates: [m515], profiles: all)
+            == .unknown)
+    #expect(PalmAdmission.decide(user: PalmUser(name: "", userId: 0),
+                                 expected: m515.id, candidates: [m515], profiles: all)
+            == .adopt(profile: m515.id))
+}
+
+@Test func portListenerAdmission() {
+    let all = [m515, t3]
+    // the listener serves every profile with a tab on its port
+    #expect(PalmAdmission.decide(user: PalmUser(name: "T3", userId: 88143),
+                                 expected: nil, candidates: [m515, t3], profiles: all)
+            == .install(profile: t3.id))
+    // a known Palm whose profile has no tab on this port
+    #expect(PalmAdmission.decide(user: PalmUser(name: "T3", userId: 88143),
+                                 expected: nil, candidates: [m515], profiles: all)
+            == .unknown)
+    // a blank Palm: not clear which profile it should become
+    #expect(PalmAdmission.decide(user: PalmUser(name: "", userId: 0),
+                                 expected: nil, candidates: [m515, t3], profiles: all)
+            == .blank)
+    // a renamed Palm is still the same Palm
+    #expect(PalmAdmission.decide(user: PalmUser(name: "renamed", userId: 41981),
+                                 expected: nil, candidates: [m515], profiles: all)
+            == .install(profile: m515.id))
+}
+
+// MARK: - ChainRun
+
+@Test func chainRunsThrough() {
+    let a = UUID(), b = UUID(), c = UUID()
+    var run = ChainRun(steps: [a, b, c])
+    #expect(run.currentTab == a)
+    run.stepSucceeded()
+    #expect(run.currentTab == b)
+    run.stepSucceeded()
+    run.stepSucceeded()
+    #expect(run.state == .finished)
+    #expect(run.currentTab == nil)
+    #expect(!run.isActive)
+}
+
+@Test func chainPausesOnFailure() {
+    let a = UUID(), b = UUID(), c = UUID()
+    var run = ChainRun(steps: [a, b, c])
+    run.stepSucceeded()
+    run.stepFailed(reason: "timeout")
+    #expect(run.state == .paused(step: 1, reason: "timeout"))
+    #expect(run.currentTab == b)
+    // a paused chain ignores the end of other sessions
+    run.stepSucceeded()
+    #expect(run.state == .paused(step: 1, reason: "timeout"))
+
+    run.retry()
+    #expect(run.state == .running(step: 1))
+    run.stepFailed(reason: "wrong Palm")
+    run.skip()
+    #expect(run.state == .running(step: 2))
+    #expect(run.skipped == [1])
+    run.stepSucceeded()
+    #expect(run.state == .finished)
+}
+
+@Test func chainCancel() {
+    var run = ChainRun(steps: [UUID(), UUID()])
+    run.cancel()
+    #expect(run.state == .cancelled)
+    run.stepSucceeded()
+    #expect(run.state == .cancelled)
+    #expect(ChainRun(steps: []).state == .finished)
 }

@@ -10,8 +10,10 @@ BUILD_DIR="$PROJECT_DIR/.build"
 APP_NAME="HotSync"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 
-PILOT_XFER="$HOME/.local/bin/pilot-xfer"
-PILOT_INSTALL_USER="$HOME/.local/bin/pilot-install-user"
+# pilot-link-Installation (Prefix mit include/ und lib/): hotsync-session wird gegen ihre
+# libpisock gebaut. Muss master >= c32f9eed sein, sonst findet USB unter macOS keinen Palm.
+PILOT_PREFIX="$HOME/.local"
+SESSION_TOOL="$BUILD_DIR/release/hotsync-session"
 
 echo "=== HotSync Build ==="
 echo "Projekt: $PROJECT_DIR"
@@ -59,11 +61,19 @@ else
     fi
 fi
 
-# 4. pilot-link Tools einbetten
-# Die Tools und ALLE ihre Nicht-System-Bibliotheken (rekursiv, z. B. auch libusb-1.0 hinter
-# libusb-compat) wandern ins Bundle; alle Verweise werden auf @rpath umgeschrieben. So läuft die
+# 4. hotsync-session bauen und einbetten
+# Das Werkzeug und ALLE seine Nicht-System-Bibliotheken (rekursiv: libpisock, libusb-compat,
+# libusb-1.0, ...) wandern ins Bundle; alle Verweise werden auf @rpath umgeschrieben. So läuft die
 # App auch auf einem Mac ohne Homebrew bzw. ohne pilot-link in ~/.local.
-echo "[4/6] Bette pilot-link Tools ein..."
+echo "[4/6] Baue hotsync-session und bette es ein..."
+if [ ! -f "$PILOT_PREFIX/include/pi-dlp.h" ] || [ ! -f "$PILOT_PREFIX/lib/libpisock.dylib" ]; then
+    echo "      FEHLER: pilot-link nicht gefunden unter $PILOT_PREFIX (include/pi-dlp.h, lib/libpisock.dylib)"
+    exit 1
+fi
+clang -std=c99 -Wall -Wextra -Werror -O2 \
+    -I"$PILOT_PREFIX/include" -L"$PILOT_PREFIX/lib" -lpisock \
+    -o "$SESSION_TOOL" "$PROJECT_DIR/Tools/hotsync-session/hotsync-session.c"
+echo "      hotsync-session gebaut"
 FRAMEWORKS="$APP_BUNDLE/Contents/Frameworks"
 mkdir -p "$FRAMEWORKS"
 
@@ -102,24 +112,16 @@ relink() {
     done
 }
 
-for TOOL_PATH in "$PILOT_XFER" "$PILOT_INSTALL_USER"; do
-    TOOL_NAME=$(basename "$TOOL_PATH")
-    if [ ! -f "$TOOL_PATH" ]; then
-        echo "      WARNUNG: $TOOL_NAME nicht gefunden unter $TOOL_PATH"
-        continue
-    fi
-    TOOL="$APP_BUNDLE/Contents/Resources/$TOOL_NAME"
-    cp "$TOOL_PATH" "$TOOL"
-    chmod +x "$TOOL"
-    chmod u+w "$TOOL"
-    echo "      $TOOL_NAME kopiert von $TOOL_PATH"
-    for dep in $(non_system_deps "$TOOL_PATH"); do
-        embed_lib "$dep"
-    done
-    relink "$TOOL"
-    # Tools liegen in Contents/Resources, die Bibliotheken in Contents/Frameworks
-    install_name_tool -add_rpath "@executable_path/../Frameworks" "$TOOL" 2>/dev/null
+TOOL="$APP_BUNDLE/Contents/Resources/hotsync-session"
+cp "$SESSION_TOOL" "$TOOL"
+chmod +x "$TOOL"
+chmod u+w "$TOOL"
+for dep in $(non_system_deps "$SESSION_TOOL"); do
+    embed_lib "$dep"
 done
+relink "$TOOL"
+# Das Werkzeug liegt in Contents/Resources, die Bibliotheken in Contents/Frameworks
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$TOOL" 2>/dev/null
 
 for LIB in "$FRAMEWORKS"/*.dylib; do
     [ -f "$LIB" ] || continue
@@ -128,7 +130,7 @@ for LIB in "$FRAMEWORKS"/*.dylib; do
 done
 
 # Nach install_name_tool sind die Signaturen ungültig: jede Datei einzeln ad hoc neu signieren
-for BIN in "$FRAMEWORKS"/*.dylib "$APP_BUNDLE/Contents/Resources/pilot-xfer" "$APP_BUNDLE/Contents/Resources/pilot-install-user"; do
+for BIN in "$FRAMEWORKS"/*.dylib "$APP_BUNDLE/Contents/Resources/hotsync-session"; do
     [ -f "$BIN" ] && codesign --force --sign - "$BIN" 2>&1
 done
 
@@ -140,7 +142,7 @@ fi
 
 # Prüfen: kein eingebettetes Binary darf noch auf etwas außerhalb von System und Bundle zeigen
 LEAKS=""
-for BIN in "$FRAMEWORKS"/*.dylib "$APP_BUNDLE/Contents/Resources/pilot-xfer" "$APP_BUNDLE/Contents/Resources/pilot-install-user"; do
+for BIN in "$FRAMEWORKS"/*.dylib "$APP_BUNDLE/Contents/Resources/hotsync-session"; do
     [ -f "$BIN" ] || continue
     BAD=$(otool -L "$BIN" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/|@rpath/)' || true)
     [ -n "$BAD" ] && LEAKS="$LEAKS\n  $(basename "$BIN"): $BAD"

@@ -48,6 +48,23 @@ enum L10n {
         language == .de ? de : en
     }
 
+    // MARK: - Allgemein
+
+    static var done: String { s("Fertig", "Done") }
+    static var back: String { s("Zurück", "Back") }
+    static var cancel: String { s("Abbrechen", "Cancel") }
+    static var save: String { s("Sichern", "Save") }
+    static var delete: String { s("Löschen", "Delete") }
+
+    /// "m515 (ID 41981)"
+    static func identity(_ name: String, _ userId: UInt32) -> String {
+        let shown = name.isEmpty ? s("ohne Namen", "no name") : name
+        return "\(shown) (ID \(userId))"
+    }
+    static func identityUnbound(_ name: String) -> String { s(
+        "\(name) (noch keinem Palm zugeordnet)", "\(name) (no Palm assigned yet)"
+    ) }
+
     // MARK: - SetupView
 
     static var welcomeTitle: String { s("Willkommen bei HotSync", "Welcome to HotSync") }
@@ -57,42 +74,13 @@ enum L10n {
     ) }
     static var setupDevice: String { s("Gerät einrichten", "Set Up Device") }
     static var setupNameHint: String { s(
-        "Dieser Name wird beim nächsten HotSync\nautomatisch auf den Palm übertragen.",
-        "This name will be automatically transferred\nto the Palm on the next HotSync."
+        "Ein neuer Palm ohne Benutzer übernimmt diesen Namen\nbeim ersten HotSync. Ein schon benutzter Palm\nlässt sich zuordnen, wenn er sich meldet.",
+        "A new Palm without a user takes this name\non its first HotSync. A Palm that is already in use\ncan be assigned when it connects."
     ) }
     static var deviceNameLabel: String { s("Gerätename", "Device Name") }
     static var deviceNamePlaceholder: String { s("z.B. Palm m515", "e.g. Palm m515") }
-    static var done: String { s("Fertig", "Done") }
-    static var back: String { s("Zurück", "Back") }
 
-    // MARK: - MainView Status
-
-    static var statusSettingUsername: String { s("Username wird gesetzt...", "Setting username...") }
-    static var statusReady: String { s("Bereit", "Ready") }
-    static var statusSyncing: String { s("Synchronisiere...", "Syncing...") }
-    static var statusWaiting: String { s("Warte auf Palm...", "Waiting for Palm...") }
-    static var statusFinished: String { s("Sync abgeschlossen!", "Sync complete!") }
-    static func statusError(_ msg: String) -> String { s("Fehler: \(msg)", "Error: \(msg)") }
-    static func statusFilesReady(_ n: Int) -> String { s("\(n) Datei(en) bereit", "\(n) file(s) ready") }
-
-    // MARK: - MainView Detail
-
-    static var detailSettingUsername: String { s("Drücke HotSync auf dem Palm!", "Press HotSync on the Palm!") }
-    static var detailListening: String { s("Lauscht auf Palm-Verbindung", "Listening for Palm connection") }
-    static func detailSyncing(_ i: Int, _ n: Int) -> String { s("Datei \(i) von \(n)", "File \(i) of \(n)") }
-    static var detailWaiting: String { s("Drücke HotSync auf dem Palm", "Press HotSync on the Palm") }
-    static func detailFinished(_ n: Int) -> String { s("\(n) Datei(en) installiert", "\(n) file(s) installed") }
-    static var detailError: String { s("Erneut versuchen oder Log prüfen", "Retry or check the log") }
-    static var detailIdleEmpty: String { s(".prc/.pdb-Dateien hinzufügen oder HotSync drücken", "Add .prc/.pdb files or press HotSync") }
-    static var detailIdleFiles: String { s("Sync starten, dann HotSync auf Palm drücken", "Start sync, then press HotSync on Palm") }
-
-    // MARK: - MainView Progress
-
-    static var progressLabel: String { s("Fortschritt", "Progress") }
-    static var progressSettingUsername: String { s("Palm-Username wird gesetzt — Drücke HotSync!", "Setting Palm username — Press HotSync!") }
-    static var progressWaiting: String { s("Drücke jetzt HotSync auf dem Palm!", "Press HotSync on the Palm now!") }
-
-    // MARK: - MainView Queue
+    // MARK: - Warteschlange
 
     static var queueLabel: String { s("Warteschlange", "Queue") }
     static var queueEmpty: String { s(".prc/.pdb-Dateien hierher ziehen", "Drop .prc/.pdb files here") }
@@ -145,140 +133,281 @@ enum L10n {
         case .notEnoughSpace: return s("nicht genug Speicher auf dem Palm", "not enough memory on the Palm")
         case .tooLarge: return s("zu groß für den Palm", "too large for the Palm")
         case .unreadableFile: return s("Datei auf dem Mac nicht lesbar", "file cannot be read on the Mac")
-        case .palmError(let code, _): return s("Palm-Fehler \(code)", "Palm error \(code)")
-        case .other(let line): return line
+        case .palmError(let code): return s("Palm-Fehler \(code)", "Palm error \(code)")
         case .notConfirmed: return s("Übertragung nicht bestätigt (Verbindung getrennt?)",
                                      "transfer not confirmed (connection lost?)")
         }
     }
 
-    // MARK: - MainView Installed
+    // MARK: - Installiert, Log
 
     static var installedLabel: String { s("Installiert", "Installed") }
     static var installedEmpty: String { s("Noch keine Syncs", "No syncs yet") }
-
-    // MARK: - MainView Log
-
     static var logLabel: String { s("Live-Protokoll", "Live Log") }
     static var logCopy: String { s("Kopieren", "Copy") }
     static var logEmpty: String { s("Kein Protokoll", "No log entries") }
 
-    // MARK: - MainView Buttons
+    // MARK: - Kopfzeile, Tabs
 
-    static var syncStart: String { s("Sync starten", "Start Sync") }
-    static func syncStartN(_ n: Int) -> String { s("Sync starten (\(n))", "Start Sync (\(n))") }
-    static var cancel: String { s("Abbrechen", "Cancel") }
-
-    // MARK: - UsernameSheet
-
-    static var usernameSheetTitle: String { s("Palm-Username einrichten", "Set Up Palm Username") }
-    static var usernameSheetMessage: String { s(
-        "Dieser Palm hat keinen Benutzernamen.\nBitte gib einen Namen ein, der auf dem Palm gespeichert wird.",
-        "This Palm has no username.\nPlease enter a name to be stored on the Palm."
+    static var chainsButton: String { s("Ketten", "Chains") }
+    static var devicesButton: String { s("Geräte", "Devices") }
+    static var tabsEmpty: String { s("Noch kein Tab – ein Tab ist ein Palm an einem Anschluss.",
+                                     "No tab yet – a tab is a Palm on a port.") }
+    static var tabAdd: String { s("Tab anlegen", "Add Tab") }
+    static var tabAddHelp: String { s("Neuer Tab: Palm + Anschluss", "New tab: Palm + port") }
+    static var tabEditHelp: String { s("Tab bearbeiten", "Edit tab") }
+    static var tabSyncNow: String { s("Jetzt syncen", "Sync Now") }
+    static var tabSyncNowHelp: String { s(
+        "Lauscht gezielt für diesen Palm – ein anderer Palm bekommt nichts installiert",
+        "Listens for this Palm only – any other Palm gets nothing installed"
     ) }
-    static var usernameSheetSet: String { s("Setzen", "Set") }
+    static var tabStop: String { s("Stopp", "Stop") }
+    static var tabNewTitle: String { s("Neuer Tab", "New Tab") }
+    static var tabEditTitle: String { s("Tab bearbeiten", "Edit Tab") }
+    static var tabProfile: String { s("Palm", "Palm") }
+    static var tabPort: String { s("Anschluss", "Port") }
+    static func tabPortMissing(_ name: String) -> String { s("\(name) (nicht verbunden)", "\(name) (not connected)") }
+    static var tabBaudRate: String { s("Baudrate", "Baud rate") }
+    static var tabAutoListen: String { s("Automatisch lauschen", "Listen automatically") }
+    static var tabAutoListenHint: String { s(
+        "Der Anschluss wartet ständig auf einen Palm und gibt ihn dem Tab, zu dem er gehört. Ohne: nur per „Jetzt syncen“ oder als Schritt einer Kette.",
+        "The port waits for a Palm all the time and hands it to the tab it belongs to. Without: only with “Sync Now” or as a step of a chain."
+    ) }
+    static func tabDuplicate(_ title: String) -> String { s(
+        "Diesen Palm gibt es an diesem Anschluss schon: \(title)",
+        "This Palm already has a tab on this port: \(title)"
+    ) }
+    static var tabDelete: String { s("Tab löschen", "Delete Tab") }
+    static var tabDeleteConfirm: String { s("Tab löschen?", "Delete Tab?") }
+    static var tabDeleteMessage: String { s(
+        "Der Tab verschwindet auch aus allen Ketten. Profil und Warteschlange bleiben.",
+        "The tab is also removed from all chains. Profile and queue stay."
+    ) }
 
-    // MARK: - DeviceListView
+    // MARK: - Zustand eines Tabs
+
+    static var phaseIdleAuto: String { s("Bereit – lauscht, sobald der Anschluss frei ist",
+                                         "Ready – listens as soon as the port is free") }
+    static var phaseIdleManual: String { s("Bereit – „Jetzt syncen“ oder als Kettenschritt",
+                                           "Ready – “Sync Now” or as a chain step") }
+    static var phaseListeningAuto: String { s("Lauscht – HotSync auf dem Palm drücken",
+                                              "Listening – press HotSync on the Palm") }
+    static var phaseListeningTargeted: String { s("Wartet gezielt auf diesen Palm – HotSync drücken",
+                                                  "Waiting for this Palm – press HotSync") }
+    static var phaseWaitingForPort: String { s("Wartet, bis der Anschluss frei ist",
+                                               "Waiting for the port to become free") }
+    static var phasePortMissing: String { s("Anschluss nicht verbunden", "Port not connected") }
+    static func phaseSyncing(_ name: String, _ done: Int, _ total: Int, _ file: String?) -> String {
+        let current = file.map { " – \($0)" } ?? ""
+        return s("\(name): \(done) von \(total) Datei(en)\(current)", "\(name): \(done) of \(total) file(s)\(current)")
+    }
+    static func phaseSyncingNothing(_ name: String) -> String { s(
+        "\(name) verbunden – nichts zu installieren", "\(name) connected – nothing to install"
+    ) }
+
+    // MARK: - Anschlüsse
+
+    static func portConnectedAt(_ time: String) -> String { s("Kabel verbunden um \(time)", "cable connected at \(time)") }
+    static var portConnectedBeforeLaunch: String { s("schon beim Start verbunden", "connected before launch") }
+    static var portNotConnected: String { s("nicht verbunden", "not connected") }
+    static func portLastSeen(_ name: String, _ time: String) -> String { s(
+        "zuletzt gemeldet: \(name) um \(time)", "last seen: \(name) at \(time)"
+    ) }
+
+    // MARK: - Ergebnis einer Sitzung
+
+    static func resultFinished(_ time: String, _ installed: Int, _ failed: Int) -> String {
+        failed == 0
+            ? s("\(time): \(installed) Datei(en) installiert", "\(time): \(installed) file(s) installed")
+            : s("\(time): \(installed) installiert, \(failed) nicht – siehe Warteschlange",
+                "\(time): \(installed) installed, \(failed) not – see the queue")
+    }
+    static func resultTimedOut(_ time: String) -> String { s(
+        "\(time): Kein Palm hat sich gemeldet", "\(time): No Palm connected"
+    ) }
+    static func resultFailed(_ time: String, _ message: String) -> String { s(
+        "\(time): Fehler – \(message)", "\(time): Error – \(message)"
+    ) }
+    static func resultStopped(_ time: String) -> String { s("\(time): Gestoppt", "\(time): Stopped") }
+    static func resultWrongPalm(_ time: String, _ found: String, _ owner: String, _ expected: String) -> String { s(
+        "\(time): Gemeldet hat sich \(found) – das ist der Palm von „\(owner)“, erwartet war \(expected). Nichts installiert.",
+        "\(time): \(found) connected – that is the Palm of “\(owner)”, expected \(expected). Nothing installed."
+    ) }
+    static func resultUnknownPalm(_ time: String, _ found: String, _ expected: String) -> String { s(
+        "\(time): Gemeldet hat sich \(found), erwartet war \(expected). Kein Profil kennt diesen Palm – nichts installiert.",
+        "\(time): \(found) connected, expected \(expected). No profile knows this Palm – nothing installed."
+    ) }
+    static func assignThisProfile(_ name: String) -> String { s(
+        "Diesen Palm „\(name)“ zuordnen", "Assign this Palm to “\(name)”"
+    ) }
+    static var assignHint: String { s(
+        "Nach dem Zuordnen HotSync auf dem Palm noch einmal drücken.",
+        "After assigning, press HotSync on the Palm once more."
+    ) }
+    static var createProfileFromPalm: String { s("Neues Profil für diesen Palm", "New profile for this Palm") }
+
+    // MARK: - Hinweise (Palm ohne Tab)
+
+    static func noticeUnknownPalm(_ name: String, _ userId: UInt32) -> String { s(
+        "Unbekannter Palm: \(identity(name, userId)) – nichts installiert",
+        "Unknown Palm: \(identity(name, userId)) – nothing installed"
+    ) }
+    static var noticeBlankPalm: String { s(
+        "Ein Palm ohne Benutzer hat sich gemeldet – im Tab seines Profils „Jetzt syncen“ wählen, dann HotSync drücken",
+        "A Palm without a user connected – choose “Sync Now” in its profile's tab, then press HotSync"
+    ) }
+    static func noticeDetail(_ port: String, _ time: String) -> String { s("\(port) um \(time)", "\(port) at \(time)") }
+    static var assignToProfile: String { s("Zuordnen zu …", "Assign to …") }
+
+    // MARK: - Ketten
+
+    static var chainsTitle: String { s("Ketten", "Chains") }
+    static var chainsEmpty: String { s(
+        "Eine Kette synct Tabs nacheinander:\nwenn A fertig ist, B, dann C.",
+        "A chain syncs tabs one after another:\nwhen A is done, B, then C."
+    ) }
+    static var chainNew: String { s("Neue Kette", "New Chain") }
+    static func chainDefaultName(_ n: Int) -> String { s("Kette \(n)", "Chain \(n)") }
+    static var chainRun: String { s("Starten", "Run") }
+    static var chainNoSteps: String { s("keine Schritte", "no steps") }
+    static var chainName: String { s("Name", "Name") }
+    static var chainSteps: String { s("Schritte (in dieser Reihenfolge)", "Steps (in this order)") }
+    static var chainAddStep: String { s("Schritt hinzufügen", "Add Step") }
+    static var chainHint: String { s(
+        "Jeder Schritt wartet bis zu 5 Minuten auf seinen Palm. Scheitert ein Schritt, hält die Kette an: wiederholen, überspringen oder abbrechen.",
+        "Each step waits up to 5 minutes for its Palm. If a step fails, the chain pauses: retry, skip or cancel."
+    ) }
+    static func chainBannerTitle(_ name: String, _ step: Int, _ total: Int) -> String { s(
+        "Kette „\(name)“ – Schritt \(step) von \(total)", "Chain “\(name)” – step \(step) of \(total)"
+    ) }
+    static func chainRunningDetail(_ tab: String) -> String { s(
+        "\(tab): HotSync auf diesem Palm drücken", "\(tab): press HotSync on this Palm"
+    ) }
+    static func chainPausedDetail(_ tab: String, _ reason: String) -> String { s(
+        "Angehalten bei \(tab): \(reason)", "Paused at \(tab): \(reason)"
+    ) }
+    static var chainRetry: String { s("Wiederholen", "Retry") }
+    static var chainSkip: String { s("Überspringen", "Skip") }
+    static var chainCancel: String { s("Kette abbrechen", "Cancel Chain") }
+    static var chainStepStopped: String { s("gestoppt", "stopped") }
+    static var chainStepMissingTab: String { s("Tab gibt es nicht mehr", "tab no longer exists") }
+    static func chainReasonTimeout(_ minutes: Int) -> String { s(
+        "kein Palm innerhalb von \(minutes) Minuten", "no Palm within \(minutes) minutes"
+    ) }
+    static func chainReasonFilesFailed(_ n: Int) -> String { s(
+        "\(n) Datei(en) nicht installiert", "\(n) file(s) not installed"
+    ) }
+    static func chainReasonWrongPalm(_ name: String) -> String { s(
+        "falscher Palm (\(name))", "wrong Palm (\(name))"
+    ) }
+    static var chainFinishedTitle: String { s("Kette fertig", "Chain finished") }
+    static func chainFinishedBody(_ name: String, _ skipped: Int) -> String {
+        skipped == 0
+            ? s("„\(name)“ ist durchgelaufen", "“\(name)” has run through")
+            : s("„\(name)“ ist durch, \(skipped) Schritt(e) übersprungen",
+                "“\(name)” is done, \(skipped) step(s) skipped")
+    }
+
+    // MARK: - Geräte
 
     static var manageDevices: String { s("Geräte verwalten", "Manage Devices") }
-    static var newNameAction: String { s("Neuen Namen vergeben", "Assign New Name") }
-    static var readFromPalmAction: String { s("Identität vom Palm lesen", "Read Identity from Palm") }
     static var newDevice: String { s("Neues Gerät", "New Device") }
-    static var active: String { s("aktiv", "active") }
-    static var activate: String { s("Aktivieren", "Activate") }
     static var setupNewDevice: String { s("Neues Gerät einrichten", "Set Up New Device") }
     static var username: String { s("Benutzername", "Username") }
     static var usernamePlaceholder: String { s("z.B. Mein Palm", "e.g. My Palm") }
     static var deviceNotePlaceholder: String { s("z.B. Palm m515", "e.g. Palm m515") }
     static var deviceNoteLabel: String { s("Geräte-Bezeichnung (optional)", "Device Label (optional)") }
-    static var createProfileOnly: String { s("Nur Profil erstellen", "Create Profile Only") }
-    static var setOnPalm: String { s("Auf Palm setzen", "Set on Palm") }
-    static var waitingForPalm: String { s("Drücke HotSync auf dem Palm...", "Press HotSync on the Palm...") }
-    static var readPalmTitle: String { s("Warte auf Palm...", "Waiting for Palm...") }
-    static var readPalmSubtitle: String { s(
-        "Drücke den HotSync-Knopf\nauf dem Palm oder der Docking-Station.",
-        "Press the HotSync button\non the Palm or docking station."
+    static var createProfile: String { s("Anlegen", "Create") }
+    static var addProfileHint: String { s(
+        "Es entsteht ein USB-Tab. Ein neuer Palm ohne Benutzer übernimmt den Namen beim ersten HotSync; einen schon benutzten Palm ordnest du zu, wenn er sich meldet.",
+        "A USB tab is created. A new Palm without a user takes the name on its first HotSync; a Palm already in use is assigned when it connects."
     ) }
-    static var readPalmIdentityTitle: String { s("Identität vom Palm lesen", "Read Identity from Palm") }
-    static var readPalmIdentitySubtitle: String { s(
-        "Die aktuelle Benutzer-Identität wird\nvom Palm gelesen (benötigt HotSync).",
-        "The current user identity will be read\nfrom the Palm (requires HotSync)."
-    ) }
-    static var readPalmButton: String { s("Palm lesen", "Read Palm") }
+    static func profileUserId(_ id: UInt) -> String { "ID \(id)" }
+    static var profileUnbound: String { s("noch keinem Palm zugeordnet", "no Palm assigned yet") }
     static var deleteDevice: String { s("Gerät löschen?", "Delete Device?") }
     static func deleteMessage(_ name: String) -> String { s(
-        "Das Profil \"\(name)\" und alle zugehörigen Dateien werden gelöscht.",
-        "The profile \"\(name)\" and all associated files will be deleted."
+        "Das Profil \"\(name)\", seine Tabs und alle zugehörigen Dateien werden gelöscht.",
+        "The profile \"\(name)\", its tabs and all associated files will be deleted."
     ) }
-    static var delete: String { s("Löschen", "Delete") }
-    static var connectionFailed: String { s("Verbindung fehlgeschlagen.", "Connection failed.") }
-    static var noUsernameFound: String { s("Kein Benutzername gefunden. Palm verbunden?", "No username found. Is the Palm connected?") }
 
-    // MARK: - DeviceSelectorView
-
-    static var manageDevicesMenu: String { s("Geräte verwalten...", "Manage Devices...") }
-    static var noDevice: String { s("Kein Gerät", "No Device") }
-
-    // MARK: - HotSyncApp / MenuBar
+    // MARK: - Mitteilungen, Menüleiste
 
     static var syncCompleteNotifTitle: String { s("HotSync abgeschlossen", "HotSync Complete") }
     static func syncCompleteNotifBody(_ n: Int) -> String { s("\(n) Datei(en) installiert", "\(n) file(s) installed") }
     static var menuShowWindow: String { s("Fenster zeigen", "Show Window") }
     static var menuQuit: String { s("HotSync beenden", "Quit HotSync") }
-    static func menuBarSyncing(_ i: Int, _ n: Int) -> String { s("Synchronisiere \(i)/\(n)...", "Syncing \(i)/\(n)...") }
+    static func menuBarSyncingTab(_ title: String) -> String { s("Synchronisiere \(title) …", "Syncing \(title) …") }
+    static var menuBarUnknownPalm: String { s("Unbekannter Palm – siehe Fenster", "Unknown Palm – see window") }
     static var menuBarWaiting: String { s("Warte auf Palm...", "Waiting for Palm...") }
-    static var menuBarFinished: String { s("Sync abgeschlossen!", "Sync complete!") }
-    static func menuBarError(_ msg: String) -> String { s("Fehler: \(msg)", "Error: \(msg)") }
-    static func menuBarFilesReady(_ n: Int) -> String { s("\(n) Datei(en) bereit", "\(n) file(s) ready") }
     static var menuBarReady: String { s("Bereit", "Ready") }
 
-    // MARK: - SyncEngine Logs
+    // MARK: - Einträge im HotSync-Log des Palms
 
-    static var logPilotXferNotFound: String { s("pilot-xfer nicht gefunden!", "pilot-xfer not found!") }
-    static var logWaitingForConnection: String { s("Warte auf Palm-Verbindung...", "Waiting for Palm connection...") }
-    static var logPilotXferListStarted: String { s("pilot-xfer -l gestartet, wartet auf USB...", "pilot-xfer -l started, waiting for USB...") }
-    static var logConnectionSuccess: String { s("Palm-Verbindung erfolgreich", "Palm connection successful") }
-    static var logTimeout: String { s("Timeout — kein Palm verbunden", "Timeout — no Palm connected") }
-    static var logSyncComplete: String { s("HotSync abgeschlossen", "HotSync complete") }
-    static var logCancelled: String { s("Abgebrochen", "Cancelled") }
-    static func logFilesReady(_ n: Int) -> String { s(
-        "\(n) Datei(en) bereit — Drücke HotSync auf dem Palm!",
-        "\(n) file(s) ready — Press HotSync on the Palm!"
+    static func palmLogSummary(_ installed: Int, _ failed: Int) -> String {
+        failed == 0
+            ? s("HotSync für macOS: \(installed) Datei(en) installiert", "HotSync for macOS: \(installed) file(s) installed")
+            : s("HotSync für macOS: \(installed) installiert, \(failed) nicht",
+                "HotSync for macOS: \(installed) installed, \(failed) not")
+    }
+    static var palmLogNothingInstalled: String { s(
+        "HotSync für macOS: Palm nicht zugeordnet, nichts installiert",
+        "HotSync for macOS: Palm not assigned, nothing installed"
     ) }
-    static func logAllInstalled(_ n: Int) -> String { s("Alle \(n) Datei(en) installiert!", "All \(n) file(s) installed!") }
-    static func logFileProgress(_ i: Int, _ n: Int, _ name: String) -> String { "[\(i)/\(n)] \(name)" }
-    static func logFileInstalled(_ name: String) -> String { s("\(name) installiert!", "\(name) installed!") }
+
+    // MARK: - Sitzungs-Logs
+
+    static func logTabListening(_ port: String) -> String { s("Lauscht an \(port)", "Listening on \(port)") }
+    static func logPalmConnected(_ name: String, _ userId: UInt32, _ files: Int) -> String { s(
+        "Palm verbunden: \(identity(name, userId)) – \(files) Datei(en) zu installieren",
+        "Palm connected: \(identity(name, userId)) – \(files) file(s) to install"
+    ) }
+    static func logPalmRejected(_ name: String, _ userId: UInt32) -> String { s(
+        "Palm \(identity(name, userId)) gehört nicht hierher – nichts installiert",
+        "Palm \(identity(name, userId)) does not belong here – nothing installed"
+    ) }
+    static func logAdopting(_ name: String) -> String { s(
+        "Palm ohne Benutzer übernimmt das Profil „\(name)“", "Palm without a user takes the profile “\(name)”"
+    ) }
+    static func logInstalling(_ name: String) -> String { s("Installiere \(name) …", "Installing \(name) …") }
+    static func logFileInstalled(_ name: String) -> String { s("\(name) installiert", "\(name) installed") }
     static func logFileNotInstalled(_ name: String, _ reason: String) -> String { s(
         "\(name) NICHT installiert (\(reason)) — bleibt für den nächsten HotSync in der Warteschlange",
         "\(name) NOT installed (\(reason)) — stays queued for the next HotSync"
     ) }
-    static func logInstalledPartially(_ ok: Int, _ n: Int) -> String { s(
-        "\(ok) von \(n) Datei(en) installiert",
-        "\(ok) of \(n) file(s) installed"
+    static func logSessionError(_ port: String, _ stage: String, _ message: String) -> String { s(
+        "Fehler an \(port) (\(stage)): \(message)", "Error on \(port) (\(stage)): \(message)"
     ) }
-    static func logExitCode(_ code: Int32, _ name: String) -> String { s("Exit \(code) bei \(name)", "Exit \(code) for \(name)") }
-    static var logErrorPilotXfer: String { s("FEHLER: pilot-xfer nicht in Bundle oder PATH!", "ERROR: pilot-xfer not found in bundle or PATH!") }
-    static func logError(_ msg: String) -> String { s("FEHLER: \(msg)", "ERROR: \(msg)") }
-    static var logPilotXferStarted: String { s("pilot-xfer gestartet, wartet auf USB...", "pilot-xfer started, waiting for USB...") }
-
-    // MARK: - PalmIdentity Logs
-
-    static var logPilotInstallNotFound: String { s("pilot-install-user nicht gefunden!", "pilot-install-user not found!") }
-    static var logStartingPilotInstall: String { s("Starte pilot-install-user -l", "Starting pilot-install-user -l") }
-    static var logPilotInstallRunning: String { s("pilot-install-user läuft, wartet auf USB...", "pilot-install-user running, waiting for USB...") }
-    static var logNoOutput: String { s("Kein Output erhalten", "No output received") }
-    static var logPilotInstallCancelled: String { s("pilot-install-user abgebrochen", "pilot-install-user cancelled") }
-    static func logSetError(_ err: String) -> String { s("Fehler beim Setzen: \(err)", "Error setting username: \(err)") }
-    static func logStartError(_ err: String) -> String { s("Fehler beim Starten: \(err)", "Error starting process: \(err)") }
-    static var logPilotInstallStarted: String { s("pilot-install-user gestartet, wartet auf USB...", "pilot-install-user started, waiting for USB...") }
+    static func logSessionBrokenLine(_ line: String) -> String { s(
+        "Unerwartete Ausgabe von hotsync-session: \(line)", "Unexpected output from hotsync-session: \(line)"
+    ) }
+    static func logSessionWriteFailed(_ err: String) -> String { s(
+        "Anweisung an hotsync-session nicht zugestellt: \(err)", "Could not send command to hotsync-session: \(err)"
+    ) }
+    static func sessionToolMissing(_ err: String) -> String { s(
+        "hotsync-session nicht startbar: \(err)", "hotsync-session cannot be started: \(err)"
+    ) }
+    static func sessionExitStatus(_ status: Int) -> String { s(
+        "hotsync-session endete mit Status \(status)", "hotsync-session ended with status \(status)"
+    ) }
+    static func logSerialConnected(_ name: String) -> String { s("Serieller Adapter verbunden: \(name)", "Serial adapter connected: \(name)") }
+    static func logSerialDisconnected(_ name: String) -> String { s("Serieller Adapter getrennt: \(name)", "Serial adapter disconnected: \(name)") }
+    static func logChainStarted(_ name: String) -> String { s("Kette „\(name)“ gestartet", "Chain “\(name)” started") }
+    static func logChainFinished(_ name: String) -> String { s("Kette „\(name)“ fertig", "Chain “\(name)” finished") }
+    static func logChainCancelled(_ name: String) -> String { s("Kette „\(name)“ abgebrochen", "Chain “\(name)” cancelled") }
+    static func logTabsMigrated(_ n: Int) -> String { s(
+        "\(n) Tab(s) aus den bisherigen Profilen angelegt (USB, automatisch lauschen)",
+        "Created \(n) tab(s) from the existing profiles (USB, listen automatically)"
+    ) }
 
     // MARK: - DeviceManager Logs
 
     static func logProfileCreated(_ name: String, _ dir: String) -> String { s("Profil erstellt: '\(name)' → \(dir)/", "Profile created: '\(name)' → \(dir)/") }
     static func logProfileDeleted(_ name: String) -> String { s("Profil gelöscht: '\(name)'", "Profile deleted: '\(name)'") }
-    static func logActiveProfile(_ name: String) -> String { s("Aktives Profil: '\(name)'", "Active profile: '\(name)'") }
-    static func logLoadError(_ err: String) -> String { s("Fehler beim Laden von profiles.json: \(err)", "Error loading profiles.json: \(err)") }
-    static func logSaveError(_ err: String) -> String { s("Fehler beim Speichern von profiles.json: \(err)", "Error saving profiles.json: \(err)") }
+    static func logIdentityAssigned(_ name: String, _ userId: UInt32) -> String { s(
+        "Palm zugeordnet: \(identity(name, userId))", "Palm assigned: \(identity(name, userId))"
+    ) }
+    static func logLoadError(_ err: String) -> String { s("Fehler beim Laden: \(err)", "Error loading: \(err)") }
+    static func logSaveError(_ err: String) -> String { s("Fehler beim Speichern: \(err)", "Error saving: \(err)") }
     static func logMigrationFound(_ name: String) -> String { s("Legacy-Migration: '\(name)' gefunden", "Legacy migration: '\(name)' found") }
     static func logMigrationDone(_ dir: String) -> String { s("Legacy-Migration abgeschlossen → \(dir)/", "Legacy migration complete → \(dir)/") }
 
@@ -295,17 +424,8 @@ enum L10n {
         "Could not copy \(name) to the Install folder: \(err)"
     ) }
 
-    // MARK: - DebugLog
+    // MARK: - DebugLog, AppState
 
     static var logAppStarted: String { s("=== HotSync gestartet ===", "=== HotSync started ===") }
-
-    // MARK: - AppState Logs
-
     static var logSetupStarted: String { s("AppState.setup() gestartet", "AppState.setup() started") }
-    static var logNoProfile: String { s("Kein Profil vorhanden → Setup-Wizard", "No profile found → Setup wizard") }
-    static var logNoActiveProfile: String { s("Kein aktives Profil!", "No active profile!") }
-    static func logActivatingProfile(_ name: String, _ dir: String) -> String { s("Aktiviere Profil: '\(name)' (\(dir)/)", "Activating profile: '\(name)' (\(dir)/)") }
-    static var logFilesDetected: String { s("Dateien erkannt → Idle-Listener wird neu gestartet", "Files detected → Restarting idle listener") }
-    static func logStartListening(_ n: Int) -> String { s("startListening() aufgerufen (files: \(n))", "startListening() called (files: \(n))") }
-    static var logFileWatcherChange: String { s("FileWatcher: Änderung erkannt", "FileWatcher: Change detected") }
 }

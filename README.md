@@ -9,7 +9,7 @@ Background and pilot-link build for Apple Silicon: [palm2000.com](https://palm20
 
 A ready-to-use build for **Apple Silicon Macs (macOS 14 or newer)** is available on the
 [Releases page](https://github.com/User7142/hotsync-macos/releases/latest):
-`HotSync-<version>-macos-arm64.zip`. `pilot-xfer` and all the libraries it needs are
+`HotSync-<version>-macos-arm64.zip`. The sync tool and all the libraries it needs are
 included &ndash; no Homebrew, no pilot-link installation required.
 
 1. Unzip and move `HotSync.app` to `/Applications`.
@@ -20,7 +20,7 @@ included &ndash; no Homebrew, no pilot-link installation required.
    xattr -dr com.apple.quarantine /Applications/HotSync.app
    ```
 
-The licenses of the included pilot-link, libusb and popt are in
+The licenses of the included pilot-link library (libpisock) and libusb are in
 `HotSync.app/Contents/Resources/ThirdPartyLicenses/`.
 
 ## Features
@@ -30,31 +30,53 @@ The licenses of the included pilot-link, libusb and popt are in
 - **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, **version** (of an application: its `tver` resource), type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, `.prc` holding a record database, …) are marked red and never sent
 - **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
 - **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
-- **Automatic waiting** &ndash; as soon as files are queued, `pilot-xfer` starts and waits for the Palm
-- **One HotSync for everything** &ndash; all queued files are transferred in a single `pilot-xfer` session
-- **Verified installs** &ndash; a file only counts as installed when `pilot-xfer` confirmed its transfer; anything else stays queued for the next HotSync
-- **Progress** &ndash; live status with a progress bar during the transfer
-- **Notifications** &ndash; macOS notification after a successful sync
-- **Several devices** &ndash; each Palm gets its own profile (HotSync user name and ID) and its own folder; for a new device, the user name is transferred on the first HotSync
+- **Tabs: a Palm on a port** &ndash; as many as you like: "m515 · USB", "IIIx · cu.usbserial-A1". The same Palm can have a USB and a serial tab; the queue belongs to the Palm
+- **USB and serial cradles** &ndash; a USB-to-serial adapter shows up as soon as it is plugged in, with the time ("cable connected at 10:12"), so you can tell which port you just connected; USB shows which Palm reported last and when
+- **The right files for the right Palm** &ndash; every Palm is recognised by its HotSync user ID before anything is installed. A Palm that does not belong to the tab gets nothing; the app shows who connected and lets you assign it to a profile or create a new one. A Palm without a user (new or hard reset) takes the identity of the profile it is synced with
+- **Several ports at once** &ndash; USB and every serial adapter work independently; on one port, one tab at a time
+- **Listen automatically or on demand** &ndash; a tab can wait for its Palm all the time (the port hands every Palm to the tab it belongs to), or sync only with "Sync Now"
+- **Chains** &ndash; "when A is done, then B, then C": tabs that sync one after another. A failed step (no Palm within 5 minutes, wrong Palm, file refused) pauses the chain: retry, skip or cancel
+- **One HotSync for everything** &ndash; all queued files of a Palm are transferred in a single session
+- **Verified installs** &ndash; a file only counts as installed when the Palm confirmed it; anything else stays queued for the next HotSync
+- **Progress** &ndash; live status with a progress bar during the transfer, a log per tab, and an entry in the HotSync log on the Palm
+- **Notifications** &ndash; macOS notification after a successful sync and when a chain is done
 - **German and English** user interface
 
 ## Usage
 
 ### Installing files
 
-- **Double-click** a `.prc`/`.pdb` file in the Finder. It is copied into the install folder of the active device and `pilot-xfer` starts.
-- **Drag & drop** files onto the HotSync window in the menu bar.
+- **Double-click** a `.prc`/`.pdb` file in the Finder. It is copied into the install folder of the Palm of the selected tab.
+- **Drag & drop** files onto the HotSync window: they go to the Palm of the selected tab.
 - **Install folder:** copy files into `~/HotSync/<device>/Install/`; the app picks them up automatically.
 
 ### Syncing
 
 1. Add files (see above)
-2. The menu bar icon changes to an antenna (`pilot-xfer` is waiting)
+2. A tab that listens automatically is ready at once (antenna in the tab and the menu bar);
+   otherwise click **Sync Now** in the tab
 3. **Press the HotSync button on the Palm**
-4. The transfer runs, the progress bar shows the status
-5. Files whose transfer `pilot-xfer` confirmed are moved to `~/HotSync/<device>/Installed/`;
-   files that were not transferred (timeout, error, cancel on the Palm) stay in `Install/`
-   and are offered again on the next HotSync
+4. HotSync checks who connected, then the transfer runs and the progress bar shows the status
+5. Files the Palm confirmed are moved to `~/HotSync/<device>/Installed/`; files that were not
+   transferred (error, cancel on the Palm, connection lost) stay in `Install/` and are offered
+   again on the next HotSync
+
+### Tabs, ports and chains
+
+- **New tab** (`+` next to the tabs): choose the Palm and the port. A serial adapter you just
+  plugged in is preselected and shows when it was connected. For serial ports, choose the
+  baud rate (57600 works with every cradle from the Palm III on).
+- **A Palm the app does not know** (or one that belongs to another tab) gets nothing installed.
+  The tab shows its name and user ID with **Assign this Palm** (the profile now means this Palm;
+  press HotSync again) and **New profile for this Palm**.
+- **Chains** (button in the window): list tabs in order and run them. Each step waits up to five
+  minutes for its Palm; while a step runs, press HotSync on that Palm.
+
+### Moving from 1.0
+
+On the first start, every existing device gets a USB tab that listens automatically &ndash;
+everything works as before. Profiles that were created without reading the Palm carry a made-up
+user ID; when such a Palm connects, assign it once.
 
 ### Folders
 
@@ -67,10 +89,11 @@ The licenses of the included pilot-link, libusb and popt are in
 
 ## Building
 
-Unit tests (file checks, pilot-xfer transcript): `./Scripts/test.sh`
+Unit tests (file checks, session protocol, Palm recognition, chains): `./Scripts/test.sh`
 
-Requirements: macOS 14+, Swift command line tools, and `pilot-xfer` / `pilot-install-user`
-from [pilot-link](https://github.com/desrod/pilot-link) in `~/.local/bin/`.
+Requirements: macOS 14+, Swift and C command line tools, and the library of
+[pilot-link](https://github.com/desrod/pilot-link) (headers and `libpisock`) installed under
+`~/.local` &ndash; the build script compiles the sync tool `hotsync-session` against it.
 
 pilot-link on Apple Silicon, from the current `master` branch (tested with commit
 `1dfacd6c`). The tagged 0.15.0/0.15.1 sources do not find any USB device on macOS &ndash; this
@@ -85,7 +108,8 @@ CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib" \
 make && make install
 ```
 
-`--enable-conduits` builds the command line tools (off by default), `--enable-libusb` the USB support.
+`--enable-libusb` builds the USB support; `--enable-conduits` also builds pilot-link's command line
+tools (`pilot-xfer` etc.), which are handy for testing but not needed by the app.
 
 ```bash
 # Optional: regenerate the icon (Resources/AppIcon.icns is already included)
@@ -101,10 +125,10 @@ open HotSync.app
 The build script:
 1. compiles with `swift build -c release`
 2. creates the `.app` bundle with `Info.plist`
-3. copies `pilot-xfer`, `pilot-install-user` and all their non-system libraries (libpisock,
-   libusb-compat, libusb, popt &ndash; found recursively) into the bundle and rewrites the
-   references to `@rpath`, so the app does not depend on Homebrew; the build fails if any
-   reference outside the bundle is left
+3. compiles `Tools/hotsync-session/hotsync-session.c` against libpisock, copies it and all its
+   non-system libraries (libpisock, libusb-compat, libusb &ndash; found recursively) into the
+   bundle and rewrites the references to `@rpath`, so the app does not depend on Homebrew; the
+   build fails if any reference outside the bundle is left
 4. signs the app ad hoc (no Apple developer account needed)
 
 ### Double-click handler
@@ -117,7 +141,11 @@ Once, after the first start:
 ## Technology
 
 - Swift / SwiftUI (`MenuBarExtra`)
-- `pilot-xfer` as a subprocess (embedded in the bundle, via libusb)
+- `hotsync-session`: a small C tool on libpisock (pilot-link), one process per port. It accepts the
+  connection, reports the Palm's user name and ID, and then installs what the app tells it to
+  &ndash; that is how a file can never end up on the wrong Palm. Events go to the app as one JSON
+  object per line, instructions come back on stdin
+- IOKit (serial adapters coming and going)
 - FSEvents (file watcher)
 - UserNotifications
 
@@ -125,18 +153,14 @@ Once, after the first start:
 
 This is a hobby project that does its job for me, but it has rough edges:
 
-- **Install results are read from the `pilot-xfer` output.** A file counts as installed when
-  its `Installing '…'` line is followed by `… KiB total.`; `pilot-xfer` does not always exit
-  after a successful transfer, so the app then ends it (SIGKILL). If the output format of
-  pilot-link changes, files are no longer confirmed &ndash; they stay queued instead of being
-  reported as installed.
-- **Thread safety.** `PalmIdentity` is `@unchecked Sendable` and shares state between a
-  background queue and the main thread without locks or actors.
+- **One Palm per port at a time.** pilot-link takes the first Palm it finds on any USB bus and
+  cannot address a particular one, so two USB Palms cannot sync at the same time. Use a chain to
+  sync them one after another; USB and serial ports do run at the same time.
 - **No real two-way sync.** The app only installs files. Addresses, dates and memos are not
   synced like with the original Palm Desktop, and the "Backups" folder is not used yet.
-- `USBMonitor.swift` is currently unused.
-- The Palm only appears on the USB bus while a HotSync is running, so `pilot-xfer` has to be
-  started first &ndash; the app does this automatically when files are queued.
+- The Palm only appears on the USB bus while a HotSync is running, so a USB cradle itself is
+  invisible: for USB, the app can only show which Palm reported last, not when the cradle was
+  plugged in.
 - The app is only signed ad hoc and not notarized (see [Download](#download)).
 
 Pull requests are welcome.

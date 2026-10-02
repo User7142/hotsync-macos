@@ -115,12 +115,7 @@ struct SetupView: View {
         let name = username.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
 
-        let userId = UInt.random(in: 10000...99999)
-        appState.deviceManager.addProfile(
-            username: name,
-            userId: userId,
-            deviceNote: nil
-        )
-        appState.setupCompleted()
+        // Ohne User-ID: Die Identität kommt beim ersten HotSync vom Palm
+        appState.addProfile(name: name, note: nil)
     }
 }

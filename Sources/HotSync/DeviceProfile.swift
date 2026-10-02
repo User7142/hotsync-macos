@@ -8,6 +8,12 @@ struct DeviceProfile: Codable, Identifiable, Equatable {
     var lastSyncAt: Date?
     var deviceNote: String?
 
+    /// false, solange noch kein Palm diesem Profil zugeordnet ist (User-ID 0):
+    /// Dann übernimmt der erste Palm ohne Benutzer, der in einem Tab dieses
+    /// Profils synct, dessen Identität - oder der Benutzer ordnet einen
+    /// bestehenden Palm zu.
+    var isBound: Bool { userId != 0 }
+
     /// Bereinigter Verzeichnisname basierend auf deviceNote oder username.
     var directoryName: String {
         let base = (deviceNote?.isEmpty == false) ? deviceNote! : username

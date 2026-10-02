@@ -65,11 +65,12 @@ final class DebugLog: @unchecked Sendable {
     }
 }
 
-/// Die letzten Log-Zeilen für die Live-Anzeige im Hauptfenster.
+/// Die letzten Log-Zeilen für eine Live-Anzeige.
 ///
-/// Beobachtbar, damit SwiftUI jede neue Zeile sofort zeichnet - statt die
-/// komplette Log-Datei per Timer immer wieder einzulesen. Die Datei wird beim
-/// App-Start geleert, der Puffer zeigt also dasselbe wie ihr Ende.
+/// Beobachtbar, damit SwiftUI jede neue Zeile sofort zeichnet - statt eine
+/// Log-Datei per Timer immer wieder einzulesen. `shared` spiegelt das Ende
+/// von hotsync.log (die Datei wird beim App-Start geleert); jeder Tab hat
+/// zusätzlich ein eigenes Log nur seiner Sitzungen.
 /// Nur auf dem Main-Thread ändern (siehe DebugLog.publish).
 @Observable
 final class LiveLog {
@@ -80,17 +81,21 @@ final class LiveLog {
 
     static let shared = LiveLog()
 
-    /// So viele Zeilen zeigt das Hauptfenster.
-    static let capacity = 100
+    /// So viele Zeilen hält der Puffer.
+    let capacity: Int
 
     private(set) var lines: [Line] = []
     private var nextId = 0
 
-    fileprivate func append(_ text: String) {
+    init(capacity: Int = 100) {
+        self.capacity = capacity
+    }
+
+    func append(_ text: String) {
         lines.append(Line(id: nextId, text: text))
         nextId += 1
-        if lines.count > Self.capacity {
-            lines.removeFirst(lines.count - Self.capacity)
+        if lines.count > capacity {
+            lines.removeFirst(lines.count - capacity)
         }
     }
 }

@@ -1,19 +1,22 @@
 import Foundation
+import HotSyncCore
 import Observation
 
 @Observable
 final class DeviceManager {
 
     private(set) var profiles: [DeviceProfile] = []
-    var activeProfileId: UUID? {
-        didSet { UserDefaults.standard.set(activeProfileId?.uuidString, forKey: "activeProfileId") }
-    }
-
-    var activeProfile: DeviceProfile? {
-        profiles.first { $0.id == activeProfileId }
-    }
 
     var hasProfiles: Bool { !profiles.isEmpty }
+
+    func profile(_ id: UUID) -> DeviceProfile? {
+        profiles.first { $0.id == id }
+    }
+
+    /// Die Profile, wie der Identitätsabgleich (PalmAdmission) sie braucht.
+    var identities: [ProfileIdentity] {
+        profiles.map { ProfileIdentity(id: $0.id, userId: UInt32(truncatingIfNeeded: $0.userId)) }
+    }
 
     private let baseDir: URL
     private let profilesFileURL: URL
@@ -38,11 +41,6 @@ final class DeviceManager {
         ensureProfileDirectories(profile)
         saveProfiles()
 
-        // Erstes Profil wird automatisch aktiv
-        if profiles.count == 1 {
-            activeProfileId = profile.id
-        }
-
         DebugLog.shared.log(L10n.logProfileCreated(profile.username, profile.directoryName), source: "Device")
         return profile
     }
@@ -53,11 +51,6 @@ final class DeviceManager {
         // Profil-Ordner löschen
         let dir = profileDirectory(for: profile)
         try? fm.removeItem(at: dir)
-
-        // Falls aktives Profil gelöscht: auf erstes wechseln
-        if activeProfileId == profile.id {
-            activeProfileId = profiles.first?.id
-        }
 
         saveProfiles()
         DebugLog.shared.log(L10n.logProfileDeleted(profile.username), source: "Device")
@@ -75,9 +68,14 @@ final class DeviceManager {
         saveProfiles()
     }
 
-    func setActiveProfile(_ profile: DeviceProfile) {
-        activeProfileId = profile.id
-        DebugLog.shared.log(L10n.logActiveProfile(profile.username), source: "Device")
+    /// Bindet ein Profil an einen Palm: Name und User-ID kommen vom Palm.
+    /// Ab dann erkennt HotSync diesen Palm an seiner User-ID.
+    func assignIdentity(_ user: PalmUser, to profileId: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else { return }
+        profiles[index].username = user.name
+        profiles[index].userId = UInt(user.userId)
+        saveProfiles()
+        DebugLog.shared.log(L10n.logIdentityAssigned(user.name, user.userId), source: "Device")
     }
 
     // MARK: - Verzeichnisse
@@ -114,10 +112,8 @@ final class DeviceManager {
 
         DebugLog.shared.log(L10n.logMigrationFound(legacyName), source: "Device")
 
-        // Profil erstellen
-        let userId = UInt.random(in: 10000...99999)
-        let profile = addProfile(username: legacyName, userId: userId, deviceNote: nil)
-        activeProfileId = profile.id
+        // Profil erstellen - die User-ID kommt beim ersten HotSync vom Palm
+        let profile = addProfile(username: legacyName, userId: 0, deviceNote: nil)
 
         // Bestehende Dateien verschieben
         let legacyInstall = baseDir.appendingPathComponent("Install")
@@ -147,15 +143,6 @@ final class DeviceManager {
             profiles = try decoder.decode([DeviceProfile].self, from: data)
         } catch {
             DebugLog.shared.log(L10n.logLoadError("\(error)"), source: "Device")
-        }
-
-        // Aktives Profil aus UserDefaults laden
-        if let idStr = UserDefaults.standard.string(forKey: "activeProfileId"),
-           let id = UUID(uuidString: idStr),
-           profiles.contains(where: { $0.id == id }) {
-            activeProfileId = id
-        } else {
-            activeProfileId = profiles.first?.id
         }
     }
 

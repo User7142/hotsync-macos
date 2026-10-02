@@ -2,10 +2,10 @@ import Foundation
 import Observation
 import HotSyncCore
 
-/// The queue is the Install folder of the active profile: every file in it
-/// is shown - dropped on the window, opened with HotSync or copied there in
-/// the Finder - together with what will happen to it. The FileWatcher
-/// calls `refresh()` on every change of the folder.
+/// The queue is the Install folder of a profile: every file in it is shown -
+/// dropped on the window, opened with HotSync or copied there in the
+/// Finder - together with what will happen to it. Every profile has its own
+/// queue; its FileWatcher calls `refresh()` on every change of the folder.
 @Observable
 final class InstallQueue {
 
@@ -42,8 +42,8 @@ final class InstallQueue {
     private(set) var items: [QueueItem] = []
     private(set) var installedItems: [InstalledItem] = []
 
-    private(set) var installDir: URL
-    private(set) var installedDir: URL
+    let installDir: URL
+    let installedDir: URL
 
     /// Last failure per file name, valid as long as the file is unchanged.
     private var failures: [String: (failure: InstallFailure, modified: Date)] = [:]
@@ -51,10 +51,9 @@ final class InstallQueue {
     private var installing: Set<String> = []
     private var installingSession: Int?
 
-    init() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        self.installDir = home.appendingPathComponent("HotSync/Install")
-        self.installedDir = home.appendingPathComponent("HotSync/Installed")
+    init(installDir: URL, installedDir: URL) {
+        self.installDir = installDir
+        self.installedDir = installedDir
         ensureDirectories()
         refresh()
     }
@@ -67,18 +66,6 @@ final class InstallQueue {
 
     var invalidCount: Int {
         items.filter { !$0.status.isInstallable }.count
-    }
-
-    /// Switches to the folders of a profile.
-    func switchToProfile(installDir: URL, installedDir: URL) {
-        installedItems.removeAll()
-        failures.removeAll()
-        installing.removeAll()
-        installingSession = nil
-        self.installDir = installDir
-        self.installedDir = installedDir
-        ensureDirectories()
-        refresh()
     }
 
     /// Reads the Install folder again and checks every file.

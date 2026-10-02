@@ -2,36 +2,43 @@ import SwiftUI
 import UniformTypeIdentifiers
 import HotSyncCore
 
+/// Das Hauptfenster: Tab-Leiste, darüber Hinweise (laufende Kette,
+/// unbekannte Palms), darunter der gewählte Tab.
 struct MainView: View {
     @Environment(AppState.self) var appState
 
-    private let liveLog = LiveLog.shared
+    @State private var editingTab: SyncTab?
 
     var body: some View {
         VStack(spacing: 0) {
-            // Fixierter Header
-            headerSection
+            headerBar
             Divider()
 
-            // Content — füllt verfügbaren Platz
-            VStack(spacing: 16) {
-                if (appState.syncEngine.isActive && !isIdleListening) || appState.isSettingUsername {
-                    syncProgressSection
-                }
-
-                queueSection
-
-                installedSection
-
-                // Live-Log füllt den restlichen Platz
-                fileLogSection
+            if let chain = appState.activeChain {
+                ChainBanner(active: chain)
             }
-            .padding()
+            ForEach(appState.notices) { notice in
+                NoticeBanner(notice: notice)
+            }
+
+            tabBar
+            Divider()
+
+            if let id = appState.selectedTabId, let tab = appState.tabStore.tab(id) {
+                TabDetailView(tab: tab, onEdit: { editingTab = tab })
+                    .id(tab.id)
+            } else {
+                emptyState
+            }
         }
-        .frame(minWidth: 480, minHeight: 400)
+        .frame(minWidth: 560, minHeight: 480)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
             return true
+        }
+        .sheet(item: $editingTab) { tab in
+            TabEditorView(tab: tab)
+                .environment(appState)
         }
         .sheet(isPresented: Binding(
             get: { appState.showDeviceList },
@@ -40,34 +47,38 @@ struct MainView: View {
             DeviceListView()
                 .environment(appState)
         }
+        .sheet(isPresented: Binding(
+            get: { appState.showChains },
+            set: { appState.showChains = $0 }
+        )) {
+            ChainsView()
+                .environment(appState)
+        }
     }
 
-    // MARK: - Header
+    // MARK: - Kopfzeile
 
-    private var headerSection: some View {
+    private var headerBar: some View {
         HStack(spacing: 12) {
-            // Status-Badge
-            ZStack {
-                Circle()
-                    .fill(statusColor.opacity(0.2))
-                    .frame(width: 36, height: 36)
-
-                Image(systemName: statusIcon)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(statusColor)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(statusText)
-                    .font(.headline)
-                Text(statusDetail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.blue)
+            Text("HotSync")
+                .font(.headline)
 
             Spacer()
 
-            // Language Toggle
+            Button {
+                appState.showChains = true
+            } label: {
+                Label(L10n.chainsButton, systemImage: "arrow.right.circle")
+            }
+            Button {
+                appState.showDeviceList = true
+            } label: {
+                Label(L10n.devicesButton, systemImage: "laptopcomputer.and.arrow.down")
+            }
+
             Picker("", selection: Binding(
                 get: { appState.language },
                 set: { appState.language = $0 }
@@ -77,378 +88,229 @@ struct MainView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 140)
-
-            // Device-Selector
-            if appState.deviceManager.profiles.count > 0 {
-                DeviceSelectorView()
-                    .environment(appState)
-            }
-
-            // Sync / Abbrechen Button
-            if (appState.syncEngine.isActive && !isIdleListening) || appState.isSettingUsername {
-                Button(action: { appState.syncEngine.cancelSync() }) {
-                    Label(L10n.cancel, systemImage: "xmark.circle")
-                }
-                .controlSize(.large)
-            } else {
-                Button {
-                    appState.startListening()
-                } label: {
-                    Label(
-                        appState.installQueue.pendingFiles.isEmpty
-                            ? L10n.syncStart
-                            : L10n.syncStartN(appState.installQueue.pendingFiles.count),
-                        systemImage: "arrow.triangle.2.circlepath"
-                    )
-                }
-                .controlSize(.large)
-                .keyboardShortcut("s", modifiers: .command)
-            }
+            .fixedSize()
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
-    // MARK: - Sync Progress
+    // MARK: - Tab-Leiste
 
-    private var syncProgressSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                if appState.isSettingUsername {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text(L10n.progressSettingUsername)
-                            .font(.callout)
-                            .fontWeight(.medium)
-                    }
-                } else if appState.syncEngine.state == .listening {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text(L10n.progressWaiting)
-                            .font(.callout)
-                            .fontWeight(.medium)
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.down.doc.fill")
-                            .foregroundStyle(.blue)
-                        Text(appState.syncEngine.currentFileName)
-                            .font(.system(.callout, design: .monospaced))
-                            .lineLimit(1)
-                        Spacer()
-                        if appState.syncEngine.totalFiles > 1 {
-                            Text("\(appState.syncEngine.currentFileIndex + 1)/\(appState.syncEngine.totalFiles)")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
-
-                    ProgressView(value: appState.syncEngine.progress)
-                        .tint(.blue)
-                }
-            }
-            .padding(4)
-        } label: {
-            Label(L10n.progressLabel, systemImage: "arrow.triangle.2.circlepath")
-        }
-    }
-
-    // MARK: - Queue
-
-    private var queueSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 4) {
-                if appState.installQueue.items.isEmpty {
-                    HStack {
-                        Spacer()
-                        VStack(spacing: 6) {
-                            Image(systemName: "tray.and.arrow.down")
-                                .font(.title2)
-                                .foregroundStyle(.tertiary)
-                            Text(L10n.queueEmpty)
-                                .font(.callout)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 12)
-                        Spacer()
-                    }
-                } else {
-                    ForEach(appState.installQueue.items) { item in
-                        queueRow(item)
-                    }
-                }
-            }
-            .padding(4)
-        } label: {
-            HStack {
-                Label(L10n.queueLabel, systemImage: "tray.full")
-                Spacer()
-                Text(appState.installQueue.invalidCount == 0
-                     ? L10n.queueFiles(appState.installQueue.items.count)
-                     : L10n.queueFilesInvalid(appState.installQueue.items.count,
-                                              appState.installQueue.invalidCount))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func queueRow(_ item: InstallQueue.QueueItem) -> some View {
-        let look = rowLook(item.status)
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: look.icon)
-                .foregroundStyle(look.color)
-                .font(.callout)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.name)
-                    .font(.callout)
-                    .lineLimit(1)
-                if let details = databaseDetails(item) {
-                    Text(details)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Text(look.text)
-                    .font(.caption)
-                    .foregroundStyle(look.textColor)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button(action: { appState.installQueue.remove(item) }) {
-                Image(systemName: "trash")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help(L10n.queueRemoveHelp)
-            .disabled(isInstalling(item.status))
-        }
-        .padding(.vertical, 3)
-    }
-
-    private func isInstalling(_ status: InstallQueue.Status) -> Bool {
-        if case .installing = status { return true }
-        return false
-    }
-
-    private func databaseDetails(_ item: InstallQueue.QueueItem) -> String? {
-        let size = ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file)
-        switch item.status {
-        case .ready(let db), .installing(let db), .failed(let db, _):
-            return L10n.queueDatabase(db.name, db.version, db.type, db.creator, size)
-        case .invalid:
-            return size
-        }
-    }
-
-    private func rowLook(_ status: InstallQueue.Status)
-        -> (icon: String, color: Color, text: String, textColor: Color) {
-        switch status {
-        case .ready:
-            return ("doc.fill", .blue, L10n.queueReady, .secondary)
-        case .installing:
-            return appState.syncEngine.state == .syncing
-                ? ("arrow.down.doc.fill", .blue, L10n.queueInstalling, .blue)
-                : ("hourglass", .orange, L10n.queueWaiting, .orange)
-        case .failed(_, let failure):
-            return ("exclamationmark.triangle.fill", .red,
-                    L10n.queueFailed(L10n.failureText(failure)), .red)
-        case .invalid(let problem):
-            return ("xmark.octagon.fill", .red, L10n.queueInvalid(L10n.problemText(problem)), .red)
-        }
-    }
-
-    // MARK: - Installed
-
-    private var installedSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 4) {
-                if appState.installQueue.installedItems.isEmpty {
-                    HStack {
-                        Spacer()
-                        Text(L10n.installedEmpty)
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                            .padding(.vertical, 8)
-                        Spacer()
-                    }
-                } else {
-                    ForEach(Array(appState.installQueue.installedItems.prefix(10))) { item in
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                                .font(.callout)
-                            Text(item.name)
-                                .font(.callout)
-                                .lineLimit(1)
-                            Spacer()
-                            // Feste Zeitangabe statt .relative: eine relative Angabe
-                            // zählt Sekunden und zeichnet das Fenster jede Sekunde neu.
-                            Text(item.date.formatted(date: .numeric, time: .shortened))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 1)
-                    }
-                }
-            }
-            .padding(4)
-        } label: {
-            Label(L10n.installedLabel, systemImage: "checkmark.circle")
-        }
-    }
-
-    // MARK: - File-Based Live Log
-
-    private var fileLogSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 2) {
-                if liveLog.lines.isEmpty {
-                    HStack {
-                        Spacer()
-                        Text(L10n.logEmpty)
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                            .padding(.vertical, 8)
-                        Spacer()
-                    }
-                } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 1) {
-                                ForEach(liveLog.lines) { line in
-                                    Text(line.text)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .id(line.id)
-                                }
-                            }
-                        }
-                        .frame(maxHeight: .infinity)
-                        // Auf die letzte Zeile-ID achten, nicht auf die Anzahl:
-                        // Die bleibt bei vollem Puffer gleich.
-                        .onChange(of: liveLog.lines.last?.id) { _, lastId in
-                            if let lastId {
-                                proxy.scrollTo(lastId, anchor: .bottom)
-                            }
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(appState.tabStore.tabs) { tab in
+                        TabButton(tab: tab, isSelected: tab.id == appState.selectedTabId) {
+                            appState.selectedTabId = tab.id
                         }
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
-            .padding(4)
-        } label: {
-            HStack {
-                Label(L10n.logLabel, systemImage: "text.alignleft")
-                    .foregroundStyle(.primary)
-                Spacer()
-                if !liveLog.lines.isEmpty {
-                    Button(L10n.logCopy) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(liveLog.lines.map(\.text).joined(separator: "\n"), forType: .string)
-                    }
-                    .font(.caption)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                }
-                Text("~/HotSync/hotsync.log")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            Button {
+                editingTab = newTab()
+            } label: {
+                Image(systemName: "plus")
             }
+            .buttonStyle(.borderless)
+            .help(L10n.tabAddHelp)
+            .disabled(!appState.deviceManager.hasProfiles)
+            .padding(.trailing, 12)
         }
+        .background(.bar)
     }
 
-    // MARK: - Helpers
-
-    private var isIdleListening: Bool {
-        appState.syncEngine.isIdleListening
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "rectangle.stack.badge.plus")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+            Text(L10n.tabsEmpty)
+                .foregroundStyle(.secondary)
+            Button(L10n.tabAdd) {
+                editingTab = newTab()
+            }
+            .disabled(!appState.deviceManager.hasProfiles)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var statusColor: Color {
-        if appState.isSettingUsername { return .purple }
-        if isIdleListening { return .green }
-        switch appState.syncEngine.state {
-        case .syncing: return .blue
-        case .listening: return .orange
-        case .finished: return .green
-        case .error: return .red
-        case .idle: return .gray
-        }
+    /// Vorschlag für einen neuen Tab: erstes Profil an einem eben
+    /// angesteckten seriellen Adapter, sonst USB.
+    private func newTab() -> SyncTab? {
+        guard let profile = appState.deviceManager.profiles.first else { return nil }
+        let port = appState.portMonitor.serialPorts
+            .filter { $0.connectedAt != nil }
+            .max { ($0.connectedAt ?? .distantPast) < ($1.connectedAt ?? .distantPast) }?.id
+            ?? SyncTab.usbPort
+        return SyncTab(profileId: profile.id, port: port, autoListen: false)
     }
 
-    private var statusIcon: String {
-        if appState.isSettingUsername { return "person.crop.circle" }
-        if isIdleListening { return "antenna.radiowaves.left.and.right" }
-        switch appState.syncEngine.state {
-        case .syncing: return "arrow.triangle.2.circlepath"
-        case .listening: return "antenna.radiowaves.left.and.right"
-        case .finished: return "checkmark.circle.fill"
-        case .error: return "exclamationmark.triangle.fill"
-        case .idle: return "power.circle"
-        }
-    }
-
-    private var statusText: String {
-        if appState.isSettingUsername { return L10n.statusSettingUsername }
-
-        let palmName = appState.palmIdentity.currentPalmName
-        let prefix = palmName.isEmpty ? "" : "[\(palmName)] "
-
-        if isIdleListening {
-            return "\(prefix)\(L10n.statusReady)"
-        }
-
-        switch appState.syncEngine.state {
-        case .syncing: return "\(prefix)\(L10n.statusSyncing)"
-        case .listening: return "\(prefix)\(L10n.statusWaiting)"
-        case .finished: return "\(prefix)\(L10n.statusFinished)"
-        case .error(let msg): return L10n.statusError(msg)
-        case .idle:
-            return appState.installQueue.pendingFiles.isEmpty
-                ? "\(prefix)\(L10n.statusReady)"
-                : "\(prefix)\(L10n.statusFilesReady(appState.installQueue.pendingFiles.count))"
-        }
-    }
-
-    private var statusDetail: String {
-        if appState.isSettingUsername { return L10n.detailSettingUsername }
-
-        if isIdleListening {
-            return L10n.detailListening
-        }
-
-        switch appState.syncEngine.state {
-        case .syncing:
-            return L10n.detailSyncing(appState.syncEngine.currentFileIndex + 1, appState.syncEngine.totalFiles)
-        case .listening:
-            return L10n.detailWaiting
-        case .finished:
-            return L10n.detailFinished(appState.syncEngine.totalFiles)
-        case .error:
-            return L10n.detailError
-        case .idle:
-            return appState.installQueue.pendingFiles.isEmpty
-                ? L10n.detailIdleEmpty
-                : L10n.detailIdleFiles
-        }
-    }
-
-    /// Every dropped file goes into the Install folder; the queue then
-    /// shows whether HotSync can install it.
+    /// Jede abgelegte Datei landet in der Warteschlange des gewählten Tabs.
     private func handleDrop(_ providers: [NSItemProvider]) {
+        guard let id = appState.selectedTabId,
+              let tab = appState.tabStore.tab(id),
+              let queue = appState.queue(for: tab) else { return }
         for provider in providers {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                 guard let data = item as? Data,
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                 DispatchQueue.main.async {
-                    self.appState.installQueue.add([url])
+                    queue.add([url])
                 }
             }
+        }
+    }
+}
+
+// MARK: - Tab-Knopf
+
+private struct TabButton: View {
+    @Environment(AppState.self) var appState
+    let tab: SyncTab
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 7, height: 7)
+                Text(appState.title(of: tab))
+                    .lineLimit(1)
+                if tab.autoListen {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var dotColor: Color {
+        guard let status = appState.status(tab.id) else { return .gray }
+        switch status.phase {
+        case .syncing: return .blue
+        case .listening: return .green
+        case .waitingForPort: return .orange
+        case .idle:
+            switch status.lastResult {
+            case .rejected, .failed, .timedOut: return .red
+            case .finished(_, _, let failed): return failed > 0 ? .orange : .gray
+            case .stopped, nil: return .gray
+            }
+        }
+    }
+}
+
+// MARK: - Banner: laufende Kette
+
+private struct ChainBanner: View {
+    @Environment(AppState.self) var appState
+    let active: AppState.ActiveChain
+
+    var body: some View {
+        let name = appState.tabStore.chain(active.chainId)?.name ?? ""
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.right.circle.fill")
+                .foregroundStyle(isPaused ? .orange : .blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.chainBannerTitle(name, stepIndex + 1, active.run.steps.count))
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(isPaused ? .orange : .secondary)
+            }
+            Spacer()
+            if isPaused {
+                Button(L10n.chainRetry) { appState.retryChainStep() }
+                Button(L10n.chainSkip) { appState.skipChainStep() }
+            }
+            Button(L10n.chainCancel, role: .destructive) { appState.cancelChain() }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background((isPaused ? Color.orange : Color.blue).opacity(0.08))
+    }
+
+    private var isPaused: Bool {
+        if case .paused = active.run.state { return true }
+        return false
+    }
+
+    private var stepIndex: Int {
+        switch active.run.state {
+        case .running(let step), .paused(let step, _): return step
+        case .finished, .cancelled: return max(active.run.steps.count - 1, 0)
+        }
+    }
+
+    private var detail: String {
+        let tabName = active.run.currentTab.flatMap { appState.tabStore.tab($0) }
+            .map { appState.title(of: $0) } ?? "?"
+        if case .paused(_, let reason) = active.run.state {
+            return L10n.chainPausedDetail(tabName, reason)
+        }
+        return L10n.chainRunningDetail(tabName)
+    }
+}
+
+// MARK: - Banner: Palm ohne Tab
+
+private struct NoticeBanner: View {
+    @Environment(AppState.self) var appState
+    let notice: PortNotice
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "questionmark.circle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(L10n.noticeDetail(appState.portLabel(notice.port),
+                                       notice.date.formatted(date: .omitted, time: .shortened)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if case .unknown(let user) = notice.kind {
+                Menu(L10n.assignToProfile) {
+                    ForEach(appState.deviceManager.profiles) { profile in
+                        Button(profile.username) { appState.assign(user, to: profile.id) }
+                    }
+                }
+                .fixedSize()
+                Button(L10n.createProfileFromPalm) {
+                    appState.createProfile(from: user, port: notice.port)
+                }
+            }
+            Button {
+                appState.dismissNotice(notice.id)
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.08))
+    }
+
+    private var title: String {
+        switch notice.kind {
+        case .unknown(let user): return L10n.noticeUnknownPalm(user.name, user.userId)
+        case .blank: return L10n.noticeBlankPalm
         }
     }
 }
