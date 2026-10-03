@@ -30,6 +30,7 @@ The licenses of the included pilot-link library (libpisock) and libusb are in
 - **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, **version** (of an application: its `tver` resource), type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, `.prc` holding a record database, …) are marked red and never sent
 - **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
 - **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
+- **Move to another Palm** &ndash; drag queued files onto the tab of another device or use "Move to" in the context menu; select several with shift-click (range) and command-click, as in the Finder
 - **Tabs: a Palm on a port** &ndash; as many as you like: "m515 · USB", "IIIx · cu.usbserial-A1". The same Palm can have a USB and a serial tab; the queue belongs to the Palm
 - **USB and serial cradles** &ndash; a USB-to-serial adapter shows up as soon as it is plugged in, with the time ("cable connected at 10:12"), so you can tell which port you just connected; USB shows which Palm reported last and when
 - **The right files for the right Palm** &ndash; every Palm is recognised by its HotSync user ID before anything is installed. A Palm that does not belong to the tab gets nothing; the app shows who connected and lets you assign it to a profile or create a new one. A Palm without a user (new or hard reset) takes the identity of the profile it is synced with
@@ -47,7 +48,7 @@ The licenses of the included pilot-link library (libpisock) and libusb are in
 ### Installing files
 
 - **Double-click** a `.prc`/`.pdb` file in the Finder. It is copied into the install folder of the Palm of the selected tab.
-- **Drag & drop** files onto the HotSync window: they go to the Palm of the selected tab.
+- **Drag & drop** files onto the HotSync window: they go to the Palm of the selected tab. Dropped on a tab, they go to that tab's Palm.
 - **Install folder:** copy files into `~/HotSync/<device>/Install/`; the app picks them up automatically.
 
 ### Syncing
@@ -137,6 +138,7 @@ Once, after the first start:
 1. Right-click a `.prc` file → "Open With" → "Other…"
 2. Select `HotSync.app`
 3. Enable "Always Open With"
+4. The same for a `.pdb` file
 
 ## Technology
 
