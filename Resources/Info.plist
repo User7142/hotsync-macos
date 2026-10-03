@@ -54,6 +54,10 @@
             <key>LSItemContentTypes</key>
             <array>
                 <string>com.palm.pdb</string>
+                <!-- LibreOffice imports .pdb as AportisDoc (a Palm database
+                     too); with LibreOffice installed, .pdb files get this
+                     type instead of com.palm.pdb -->
+                <string>org.libreoffice.pdb-document</string>
             </array>
             <key>CFBundleTypeExtensions</key>
             <array>
