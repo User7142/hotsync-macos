@@ -218,3 +218,48 @@ private let t3 = ProfileIdentity(id: UUID(), userId: 88143)
     #expect(run.state == .cancelled)
     #expect(ChainRun(steps: []).state == .finished)
 }
+
+// MARK: - ListSelection
+
+@Test func selectionClickShiftCommand() {
+    let order = ["a", "b", "c", "d", "e"]
+    var selection = ListSelection<String>()
+    selection.click("b", modifier: .none, order: order)
+    #expect(selection.selected == ["b"])
+    selection.click("d", modifier: .extend, order: order)
+    #expect(selection.selected == ["b", "c", "d"])
+    // a new shift-click replaces the range from the same anchor
+    selection.click("a", modifier: .extend, order: order)
+    #expect(selection.selected == ["a", "b"])
+    selection.click("e", modifier: .toggle, order: order)
+    #expect(selection.selected == ["a", "b", "e"])
+    selection.click("a", modifier: .toggle, order: order)
+    #expect(selection.selected == ["b", "e"])
+    selection.click("c", modifier: .none, order: order)
+    #expect(selection.selected == ["c"])
+}
+
+@Test func selectionShiftWithoutAnchorSelectsOne() {
+    var selection = ListSelection<String>()
+    selection.click("c", modifier: .extend, order: ["a", "b", "c"])
+    #expect(selection.selected == ["c"])
+}
+
+@Test func selectionTargets() {
+    let order = ["a", "b", "c", "d"]
+    var selection = ListSelection<String>()
+    selection.click("d", modifier: .none, order: order)
+    selection.click("b", modifier: .toggle, order: order)
+    #expect(selection.targets(for: "d", order: order) == ["b", "d"])
+    #expect(selection.targets(for: "a", order: order) == ["a"])
+}
+
+@Test func selectionRetain() {
+    let order = ["a", "b", "c"]
+    var selection = ListSelection<String>()
+    selection.click("a", modifier: .none, order: order)
+    selection.click("c", modifier: .extend, order: order)
+    selection.retain(["b", "c"])
+    #expect(selection.selected == ["b", "c"])
+    #expect(selection.anchor == nil)
+}

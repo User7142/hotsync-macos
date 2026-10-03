@@ -313,6 +313,27 @@ final class AppState {
         watchers[profile.id] = watcher
     }
 
+    /// Verschiebt Dateien in die Warteschlange eines anderen Profils.
+    func move(_ items: [InstallQueue.QueueItem], from source: InstallQueue, to profileId: UUID) {
+        guard let target = queues[profileId] else { return }
+        source.move(items, to: target)
+    }
+
+    /// Auf einen Reiter gezogene Dateien: Eine Datei aus einer anderen
+    /// Warteschlange wandert in die des Reiters - mit allen dort
+    /// ausgewählten, wenn sie dazugehört. Alle anderen werden hineinkopiert.
+    func drop(_ urls: [URL], on tab: SyncTab) {
+        guard let target = queues[tab.profileId] else { return }
+        for url in urls {
+            if let source = queues.values.first(where: { $0.holds(url) }),
+               let item = source.items.first(where: { $0.name == url.lastPathComponent }) {
+                source.move(source.targets(for: item), to: target)
+            } else {
+                target.add([url])
+            }
+        }
+    }
+
     // MARK: - Anschlüsse verteilen
 
     private func requestStart(_ id: UUID) {

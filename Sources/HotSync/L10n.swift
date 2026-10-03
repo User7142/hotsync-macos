@@ -90,6 +90,8 @@ enum L10n {
     static func queueFilesInvalid(_ n: Int, _ invalid: Int) -> String {
         "\(queueFiles(n)), " + s("\(invalid) nicht installierbar", "\(invalid) not installable")
     }
+    static var queueMoveTo: String { s("Verschieben nach", "Move to") }
+    static func queueMoveFilesTo(_ n: Int) -> String { s("\(n) Dateien verschieben nach", "Move \(n) files to") }
     static var queueRemoveHelp: String { s("In den Papierkorb legen", "Move to Trash") }
     static var queueReady: String { s("Bereit – wird beim nächsten HotSync installiert",
                                       "Ready – installed with the next HotSync") }
@@ -416,6 +418,16 @@ enum L10n {
     static func logFileRemoved(_ name: String) -> String { s("In den Papierkorb: \(name)", "Moved to Trash: \(name)") }
     static func logRemoveFailed(_ name: String, _ err: String) -> String { s(
         "\(name) konnte nicht entfernt werden: \(err)", "Could not remove \(name): \(err)"
+    ) }
+    static func logQueueMoved(_ name: String, _ dir: String) -> String { s(
+        "Verschoben: \(name) → Warteschlange \(dir)", "Moved: \(name) → queue \(dir)"
+    ) }
+    static func logQueueMoveFailed(_ name: String, _ err: String) -> String { s(
+        "\(name) konnte nicht verschoben werden: \(err)", "Could not move \(name): \(err)"
+    ) }
+    static func logQueueMoveBusy(_ name: String) -> String { s(
+        "\(name) wird gerade übertragen und bleibt in der Warteschlange",
+        "\(name) is being transferred and stays in the queue"
     ) }
     static func logCopyFailed(_ name: String, _ err: String) -> String { s(
         "\(name) konnte nicht in den Install-Ordner kopiert werden: \(err)",

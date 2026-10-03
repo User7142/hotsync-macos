@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import HotSyncCore
 
 /// Inhalt eines Tabs: Anschluss und Zustand, Ergebnis der letzten Sitzung,
@@ -17,7 +18,8 @@ struct TabDetailView: View {
                 }
             }
             if let queue = appState.queue(for: tab) {
-                QueueSection(queue: queue, isSyncing: appState.status(tab.id)?.isSyncing == true)
+                QueueSection(queue: queue, profileId: tab.profileId,
+                             isSyncing: appState.status(tab.id)?.isSyncing == true)
                 InstalledSection(queue: queue)
             }
             if let status = appState.status(tab.id) {
@@ -250,6 +252,7 @@ struct TabDetailView: View {
 struct QueueSection: View {
     @Environment(AppState.self) var appState
     let queue: InstallQueue
+    let profileId: UUID
     let isSyncing: Bool
 
     var body: some View {
@@ -321,6 +324,45 @@ struct QueueSection: View {
             .disabled(isInstalling(item.status))
         }
         .padding(.vertical, 3)
+        .padding(.horizontal, 4)
+        .background {
+            if queue.selection.selected.contains(item.name) {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.accentColor.opacity(0.18))
+            }
+        }
+        .contentShape(Rectangle())
+        // Auswahl wie im Finder: Klick, ⇧-Klick (Bereich), ⌘-Klick (einzeln dazu)
+        .onTapGesture {
+            let flags = NSApp.currentEvent?.modifierFlags ?? []
+            let modifier: ListSelection<String>.Modifier =
+                flags.contains(.shift) ? .extend : flags.contains(.command) ? .toggle : .none
+            queue.selection.click(item.name, modifier: modifier, order: queue.items.map(\.name))
+        }
+        // Auf den Reiter eines anderen Geräts ziehen verschiebt die Datei
+        // dorthin - gehört sie zur Auswahl, die ganze Auswahl
+        .draggable(item.url) {
+            dragPreview(count: queue.targets(for: item).count, name: item.name)
+        }
+        .contextMenu {
+            let others = appState.deviceManager.profiles.filter { $0.id != profileId }
+            let targets = queue.targets(for: item)
+            Menu(targets.count == 1 ? L10n.queueMoveTo : L10n.queueMoveFilesTo(targets.count)) {
+                ForEach(others) { profile in
+                    Button(profile.username) {
+                        appState.move(targets, from: queue, to: profile.id)
+                    }
+                }
+            }
+            .disabled(others.isEmpty || targets.allSatisfy { isInstalling($0.status) })
+        }
+    }
+
+    private func dragPreview(count: Int, name: String) -> some View {
+        Label(count == 1 ? name : L10n.queueFiles(count), systemImage: count == 1 ? "doc.fill" : "doc.on.doc.fill")
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func isInstalling(_ status: InstallQueue.Status) -> Bool {

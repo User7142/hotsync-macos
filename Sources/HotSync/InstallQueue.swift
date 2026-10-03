@@ -41,6 +41,8 @@ final class InstallQueue {
 
     private(set) var items: [QueueItem] = []
     private(set) var installedItems: [InstalledItem] = []
+    /// Files selected in the queue (by name), for moving several at once.
+    var selection = ListSelection<String>()
 
     let installDir: URL
     let installedDir: URL
@@ -103,6 +105,7 @@ final class InstallQueue {
             result.append(QueueItem(url: url, size: Int64(values?.fileSize ?? 0), status: status))
         }
         failures = failures.filter { seen.contains($0.key) }
+        selection.retain(seen)
         items = result
     }
 
@@ -159,6 +162,49 @@ final class InstallQueue {
             failures[url.lastPathComponent] = nil
         }
         refresh()
+    }
+
+    /// What a drag or a menu action on `item` applies to: the selection if
+    /// the item is part of it, otherwise the item alone.
+    func targets(for item: QueueItem) -> [QueueItem] {
+        let names = Set(selection.targets(for: item.name, order: items.map(\.name)))
+        return items.filter { names.contains($0.name) }
+    }
+
+    /// Moves queued files to the queue of another profile (they were meant
+    /// for another Palm). A file of the same name there is replaced, as by
+    /// `add`. Files of the running session stay.
+    func move(_ moving: [QueueItem], to target: InstallQueue) {
+        guard target !== self else { return }
+        let fm = FileManager.default
+        for item in moving {
+            guard !installing.contains(item.name) else {
+                DebugLog.shared.log(L10n.logQueueMoveBusy(item.name), source: "Queue")
+                continue
+            }
+            let dest = target.installDir.appendingPathComponent(item.name)
+            do {
+                if fm.fileExists(atPath: dest.path) {
+                    try fm.removeItem(at: dest)
+                }
+                try fm.moveItem(at: item.url, to: dest)
+                DebugLog.shared.log(L10n.logQueueMoved(item.name, target.installDir.lastPathComponent),
+                                    source: "Queue")
+            } catch {
+                DebugLog.shared.log(L10n.logQueueMoveFailed(item.name, error.localizedDescription),
+                                    source: "Queue")
+            }
+            failures[item.name] = nil
+            target.failures[item.name] = nil
+        }
+        refresh()
+        target.refresh()
+    }
+
+    /// Whether `url` is a file of this queue.
+    func holds(_ url: URL) -> Bool {
+        url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+            == installDir.resolvingSymlinksInPath().standardizedFileURL
     }
 
     /// Moves a queued file to the Trash.

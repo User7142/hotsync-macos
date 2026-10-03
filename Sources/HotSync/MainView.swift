@@ -187,6 +187,7 @@ private struct TabButton: View {
     let action: () -> Void
 
     @State private var isHovered = false
+    @State private var isDropTarget = false
 
     var body: some View {
         Button(action: action) {
@@ -217,6 +218,12 @@ private struct TabButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        // Dateien auf den Reiter ziehen: aus einer anderen Warteschlange
+        // verschoben, aus dem Finder kopiert
+        .dropDestination(for: URL.self) { urls, _ in
+            appState.drop(urls, on: tab)
+            return true
+        } isTargeted: { isDropTarget = $0 }
     }
 
     private static let radius: CGFloat = 7
@@ -224,7 +231,9 @@ private struct TabButton: View {
     @ViewBuilder
     private var background: some View {
         let shape = UnevenRoundedRectangle(topLeadingRadius: Self.radius, topTrailingRadius: Self.radius)
-        if isSelected {
+        if isDropTarget {
+            shape.fill(Color.accentColor.opacity(0.25))
+        } else if isSelected {
             shape.fill(Color(nsColor: .windowBackgroundColor))
         } else if isHovered {
             shape.fill(Color.primary.opacity(0.06))
