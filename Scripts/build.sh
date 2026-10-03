@@ -11,8 +11,9 @@ APP_NAME="HotSync"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 
 # pilot-link-Installation (Prefix mit include/ und lib/): hotsync-session wird gegen ihre
-# libpisock gebaut. Muss master >= c32f9eed sein, sonst findet USB unter macOS keinen Palm.
-PILOT_PREFIX="$HOME/.local"
+# libpisock gebaut (abweichender Ort per Umgebungsvariable PILOT_PREFIX). Muss master >= c32f9eed
+# sein, sonst findet USB unter macOS keinen Palm.
+PILOT_PREFIX="${PILOT_PREFIX:-$HOME/.local}"
 SESSION_TOOL="$BUILD_DIR/release/hotsync-session"
 
 echo "=== HotSync Build ==="
