@@ -34,8 +34,6 @@ public struct PalmDatabaseFile: Equatable, Sendable {
         case unreadable
         case tooSmall
         case invalidName
-        /// .prc must be a resource database, .pdb a record database
-        case kindMismatch(expectedResource: Bool)
         case truncated
     }
 
@@ -66,15 +64,10 @@ public struct PalmDatabaseFile: Equatable, Sendable {
         let name = String(decoding: bytes[0..<end], as: UTF8.self)
 
         let attributes = UInt16(bytes[32]) << 8 | UInt16(bytes[33])
+        // The header decides the kind, not the extension: the Palm has no
+        // file names, pilot-xfer installs by the attribute bit, and resource
+        // databases named .pdb are common (data packs, e.g. game levels).
         let isResource = attributes & 0x0001 != 0
-        switch ext {
-        case "prc" where !isResource:
-            return .failure(.kindMismatch(expectedResource: true))
-        case "pdb" where isResource, "pqa" where isResource:
-            return .failure(.kindMismatch(expectedResource: false))
-        default:
-            break
-        }
 
         let count = Int(bytes[76]) << 8 | Int(bytes[77])
         let entrySize = isResource ? 10 : 8

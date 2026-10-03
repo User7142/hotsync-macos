@@ -64,6 +64,15 @@ private func imageWithVersion(_ version: String?) -> Data {
     #expect(!file.isResourceDatabase)
 }
 
+@Test func headerDecidesKindNotExtension() throws {
+    let pack = try PalmDatabaseFile.inspect(
+        data: image(name: "LEMM_CLASSIC_FUN", resource: true, records: 2, type: "levl", creator: "LEMM"),
+        fileExtension: "pdb").get()
+    #expect(pack.isResourceDatabase)
+    let records = try PalmDatabaseFile.inspect(data: image(resource: false), fileExtension: "prc").get()
+    #expect(!records.isResourceDatabase)
+}
+
 @Test func rejectsWrongFiles() {
     #expect(PalmDatabaseFile.inspect(data: Data("hello".utf8), fileExtension: "txt")
             == .failure(.unsupportedExtension("txt")))
@@ -71,10 +80,6 @@ private func imageWithVersion(_ version: String?) -> Data {
             == .failure(.tooSmall))
     #expect(PalmDatabaseFile.inspect(data: image(name: "", resource: true), fileExtension: "prc")
             == .failure(.invalidName))
-    #expect(PalmDatabaseFile.inspect(data: image(resource: false), fileExtension: "prc")
-            == .failure(.kindMismatch(expectedResource: true)))
-    #expect(PalmDatabaseFile.inspect(data: image(resource: true), fileExtension: "pdb")
-            == .failure(.kindMismatch(expectedResource: false)))
     #expect(PalmDatabaseFile.inspect(data: image(resource: true, records: 4, truncate: true),
                                      fileExtension: "prc")
             == .failure(.truncated))

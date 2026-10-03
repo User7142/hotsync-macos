@@ -117,10 +117,6 @@ enum L10n {
         case .unreadable: return s("Datei nicht lesbar", "file cannot be read")
         case .tooSmall: return s("zu klein für eine Palm-Datenbank", "too small for a Palm database")
         case .invalidName: return s("ungültiger Datenbankname im Header", "invalid database name in the header")
-        case .kindMismatch(let expectedResource):
-            return expectedResource
-                ? s(".prc, enthält aber eine Record-Datenbank (.pdb)", ".prc, but holds a record database (.pdb)")
-                : s("enthält eine Ressourcen-Datenbank (.prc)", "holds a resource database (.prc)")
         case .truncated: return s("unvollständig (abgeschnitten)", "incomplete (truncated)")
         }
     }
