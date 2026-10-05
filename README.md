@@ -27,8 +27,9 @@ The licenses of the included pilot-link library (libpisock) and libusb are in
 
 - **Menu bar app** (SwiftUI) &ndash; always ready, no Dock icon
 - **Install queue** &ndash; `.prc`/`.pdb`/`.pqa` files via drag & drop, double-click in the Finder, or the install folder; the queue always shows the folder's content, whichever way a file got there
-- **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, **version** (of an application: its `tver` resource), type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, `.prc` holding a record database, …) are marked red and never sent
+- **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, **version** (of an application: its `tver` resource), type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, …) are marked red and never sent
 - **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
+- **New Palms are asked about** &ndash; a Palm HotSync does not know yet brings up a dialog: add it as a new device with its own tab and queue. A Palm without a user name (new or after a hard reset) gets its name there, written to the Palm with the next HotSync
 - **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
 - **Move to another Palm** &ndash; drag queued files onto the tab of another device or use "Move to" in the context menu; select several with shift-click (range) and command-click, as in the Finder
 - **Tabs: a Palm on a port** &ndash; as many as you like: "m515 · USB", "IIIx · cu.usbserial-A1". The same Palm can have a USB and a serial tab; the queue belongs to the Palm
@@ -92,25 +93,23 @@ user ID; when such a Palm connects, assign it once.
 
 Unit tests (file checks, session protocol, Palm recognition, chains): `./Scripts/test.sh`
 
-Requirements: macOS 14+, Swift and C command line tools, and the library of
-[pilot-link](https://github.com/desrod/pilot-link) (headers and `libpisock`) installed under
-`~/.local` &ndash; the build script compiles the sync tool `hotsync-session` against it.
-
-pilot-link on Apple Silicon, from the current `master` branch (tested with commit
-`1dfacd6c`). The tagged 0.15.0/0.15.1 sources do not find any USB device on macOS &ndash; this
-was fixed upstream in commit `c32f9eed` ("libusb: fix device discovery on macOS and the BSDs"):
+Requirements: macOS 14+, Swift and C command line tools, and from Homebrew:
 
 ```bash
-brew install libusb libusb-compat autoconf automake libtool popt readline pkg-config
-git clone https://github.com/desrod/pilot-link.git && cd pilot-link
-sh ./autogen.sh
-CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib" \
-  ./configure --prefix=$HOME/.local --enable-libusb --enable-conduits
-make && make install
+brew install libusb libusb-compat autoconf automake libtool pkg-config
 ```
 
-`--enable-libusb` builds the USB support; `--enable-conduits` also builds pilot-link's command line
-tools (`pilot-xfer` etc.), which are handy for testing but not needed by the app.
+pilot-link does not need to be installed: the build script builds its library `libpisock` itself
+(`Scripts/build-pilot-link.sh`, into `.build/pilot-link`) from the commit pinned in
+`Vendor/pilot-link/COMMIT` plus the patches in `Vendor/pilot-link/patches`, and only rebuilds it
+when one of them changes. The tagged 0.15.0/0.15.1 sources do not find any USB device on macOS
+&ndash; this was fixed upstream in commit `c32f9eed`. The patches on top:
+
+- `0001` accepts high-speed (512-byte) bulk endpoints &ndash; without it a LifeDrive is never seen
+- `0002` gives the device a second to answer each USB configuration request instead of waiting
+  forever &ndash; a device that does not answer used to block the listener for good
+- `0003` keeps a failed connection-info request failed for Tapwave-flagged devices
+  (0x0830:0x0061: Zire 31/72, Z22, LifeDrive) instead of going on with guessed USB pipes
 
 ```bash
 # Optional: regenerate the icon (Resources/AppIcon.icns is already included)
@@ -126,7 +125,7 @@ open HotSync.app
 The build script:
 1. compiles with `swift build -c release`
 2. creates the `.app` bundle with `Info.plist`
-3. compiles `Tools/hotsync-session/hotsync-session.c` against libpisock, copies it and all its
+3. builds libpisock from pilot-link plus patches (see above), compiles `Tools/hotsync-session/hotsync-session.c` against libpisock, copies it and all its
    non-system libraries (libpisock, libusb-compat, libusb &ndash; found recursively) into the
    bundle and rewrites the references to `@rpath`, so the app does not depend on Homebrew; the
    build fails if any reference outside the bundle is left
@@ -169,5 +168,6 @@ Pull requests are welcome.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). pilot-link, which is copied into the app bundle at build
-time, is licensed under the GPL/LGPL.
+MIT, see [LICENSE](LICENSE). pilot-link, whose library is built with the patches in
+`Vendor/pilot-link/patches` and copied into the app bundle at build time, is licensed under the
+GPL/LGPL.
