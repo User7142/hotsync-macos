@@ -1,0 +1,54 @@
+From bf9f6c0e802daf83d02b3d0a5da7b734b8f4426f Mon Sep 17 00:00:00 2001
+From: User7142 <5984280+User7142@users.noreply.github.com>
+Date: Mon, 5 Oct 2026 09:28:04 +0200
+Subject: [PATCH 3/3] usb: a failed connection-info request fails
+ Tapwave-flagged devices too
+
+For devices flagged USB_INIT_TAPWAVE (0x0830:0x0061 among them: Zire 31,
+Zire 72, Z22, LifeDrive) USB_configure_generic sends
+PALM_GET_EXT_CONNECTION_INFORMATION two more times and returns the
+result of the last one. A failed first request was thus hidden: the
+device was used without knowing its HotSync pipes, and USB_poll picked
+the last bulk endpoints it found.
+
+A LifeDrive shows this every time HotSync is pressed: while it switches
+from its file transfer mode ('rfsL') to HotSync, the first request
+times out, the session goes to endpoints 0x88/0x04 instead of 0x86/0x02,
+and the connection breaks with PI_ERR_SOCK_DISCONNECTED. Half a second
+later the device answers with its 'sync' port.
+
+Only send the extra requests after a successful first one and keep its
+result, so the device is skipped and tried again on the next poll.
+---
+ libpisock/usb.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/libpisock/usb.c b/libpisock/usb.c
+index ea5d6a2c..808f4375 100644
+--- a/libpisock/usb.c
++++ b/libpisock/usb.c
+@@ -1117,13 +1117,17 @@ USB_configure_generic (pi_usb_data_t *dev, u_int8_t *input_pipe, u_int8_t *outpu
+ 		}
+ 	}
+ 
+-	if (flags & USB_INIT_TAPWAVE) {
++	if (ret >= 0 && (flags & USB_INIT_TAPWAVE)) {
+ 		/*
+ 		 * Tapwave: for Zodiac, the TwUSBD.sys driver on Windows sends
+-		 * the ext-connection-info packet two additional times.
++		 * the ext-connection-info packet two additional times. Their
++		 * answers change nothing: a failed first request must still
++		 * fail the configuration, or the device is used with guessed
++		 * pipes (a LifeDrive switching to HotSync mode then breaks the
++		 * connection) instead of being tried again on the next poll.
+ 		 */
+-		ret = dev->impl.control_request (dev, 0xc2, PALM_GET_EXT_CONNECTION_INFORMATION, 0, 0, &ci, sizeof (ci), USB_CONFIGURE_TIMEOUT);
+-		ret = dev->impl.control_request (dev, 0xc2, PALM_GET_EXT_CONNECTION_INFORMATION, 0, 0, &ci, sizeof (ci), USB_CONFIGURE_TIMEOUT);
++		dev->impl.control_request (dev, 0xc2, PALM_GET_EXT_CONNECTION_INFORMATION, 0, 0, &ci, sizeof (ci), USB_CONFIGURE_TIMEOUT);
++		dev->impl.control_request (dev, 0xc2, PALM_GET_EXT_CONNECTION_INFORMATION, 0, 0, &ci, sizeof (ci), USB_CONFIGURE_TIMEOUT);
+ 	}
+ 	return ret;
+ }
+-- 
+2.50.1 (Apple Git-155)
+

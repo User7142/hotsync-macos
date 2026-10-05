@@ -10,10 +10,9 @@ BUILD_DIR="$PROJECT_DIR/.build"
 APP_NAME="HotSync"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 
-# pilot-link-Installation (Prefix mit include/ und lib/): hotsync-session wird gegen ihre
-# libpisock gebaut (abweichender Ort per Umgebungsvariable PILOT_PREFIX). Muss master >= c32f9eed
-# sein, sonst findet USB unter macOS keinen Palm.
-PILOT_PREFIX="${PILOT_PREFIX:-$HOME/.local}"
+# pilot-link: libpisock aus festem Commit + Patches (Vendor/pilot-link), gebaut von
+# build-pilot-link.sh nach .build/pilot-link/install. hotsync-session wird dagegen gebaut.
+PILOT_PREFIX="$BUILD_DIR/pilot-link/install"
 SESSION_TOOL="$BUILD_DIR/release/hotsync-session"
 
 echo "=== HotSync Build ==="
@@ -67,10 +66,7 @@ fi
 # libusb-1.0, ...) wandern ins Bundle; alle Verweise werden auf @rpath umgeschrieben. So läuft die
 # App auch auf einem Mac ohne Homebrew bzw. ohne pilot-link in ~/.local.
 echo "[4/6] Baue hotsync-session und bette es ein..."
-if [ ! -f "$PILOT_PREFIX/include/pi-dlp.h" ] || [ ! -f "$PILOT_PREFIX/lib/libpisock.dylib" ]; then
-    echo "      FEHLER: pilot-link nicht gefunden unter $PILOT_PREFIX (include/pi-dlp.h, lib/libpisock.dylib)"
-    exit 1
-fi
+"$SCRIPT_DIR/build-pilot-link.sh"
 clang -std=c99 -Wall -Wextra -Werror -O2 \
     -I"$PILOT_PREFIX/include" -L"$PILOT_PREFIX/lib" -lpisock \
     -o "$SESSION_TOOL" "$PROJECT_DIR/Tools/hotsync-session/hotsync-session.c"
