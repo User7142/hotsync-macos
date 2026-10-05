@@ -412,6 +412,9 @@ enum L10n {
     static func sessionExitStatus(_ status: Int) -> String { s(
         "hotsync-session endete mit Status \(status)", "hotsync-session ended with status \(status)"
     ) }
+    static func sessionCrashed(_ signal: Int) -> String { s(
+        "hotsync-session ist abgestürzt (Signal \(signal))", "hotsync-session crashed (signal \(signal))"
+    ) }
     static func logSerialConnected(_ name: String) -> String { s("Serieller Adapter verbunden: \(name)", "Serial adapter connected: \(name)") }
     static func logSerialDisconnected(_ name: String) -> String { s("Serieller Adapter getrennt: \(name)", "Serial adapter disconnected: \(name)") }
     static func logChainStarted(_ name: String) -> String { s("Kette „\(name)“ gestartet", "Chain “\(name)” started") }

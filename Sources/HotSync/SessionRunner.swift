@@ -10,8 +10,16 @@ final class SessionRunner {
 
     let port: String
 
+    /// Wie sich das Werkzeug beendet hat
+    enum Exit: Equatable {
+        /// mit diesem Exit-Status (0 Ende, 1 Fehler, 2 Timeout)
+        case status(Int32)
+        /// durch dieses Signal - abgestürzt oder abgebrochen
+        case signal(Int32)
+    }
+
     var onEvent: ((SessionEvent) -> Void)?
-    var onExit: ((Int32) -> Void)?
+    var onExit: ((Exit) -> Void)?
 
     private let process = Process()
     private let input = Pipe()
@@ -59,8 +67,10 @@ final class SessionRunner {
                 DispatchQueue.main.async { self.onEvent?(event) }
             }
             process.waitUntilExit()
-            let status = process.terminationStatus
-            DispatchQueue.main.async { self.onExit?(status) }
+            let exit: Exit = process.terminationReason == .uncaughtSignal
+                ? .signal(process.terminationStatus)
+                : .status(process.terminationStatus)
+            DispatchQueue.main.async { self.onExit?(exit) }
         }
     }
 

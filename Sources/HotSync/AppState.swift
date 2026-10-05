@@ -492,9 +492,9 @@ final class AppState {
             guard let self, let session else { return }
             self.handle(event, of: session)
         }
-        runner.onExit = { [weak self, weak session] status in
+        runner.onExit = { [weak self, weak session] exit in
             guard let self, let session else { return }
-            self.finish(session, status: status)
+            self.finish(session, exit: exit)
         }
 
         sessions[port] = session
@@ -691,7 +691,7 @@ final class AppState {
     }
 
     /// Das Werkzeug hat sich beendet - alle Ereignisse sind ausgewertet.
-    private func finish(_ session: Session, status: Int32) {
+    private func finish(_ session: Session, exit: SessionRunner.Exit) {
         let port = session.runner.port
         if sessions[port] === session {
             sessions[port] = nil
@@ -725,10 +725,12 @@ final class AppState {
             result = .timedOut(date: now)
         } else if let message = session.errorMessage {
             result = .failed(date: now, message: message)
-        } else if status != 0 {
-            result = .failed(date: now, message: L10n.sessionExitStatus(Int(status)))
         } else {
-            result = nil
+            switch exit {
+            case .status(0): result = nil
+            case .status(let status): result = .failed(date: now, message: L10n.sessionExitStatus(Int(status)))
+            case .signal(let signal): result = .failed(date: now, message: L10n.sessionCrashed(Int(signal)))
+            }
         }
 
         // Anzeige: gezielter Tab bzw. der Tab, dem der Listener den Palm gab
@@ -763,7 +765,9 @@ final class AppState {
         let delay: TimeInterval
         if session.connected {
             delay = Self.palmDisconnectDelay
-        } else if session.errorMessage != nil && !session.stopRequested {
+        } else if case .failed = result {
+            // Fehlermeldung, Fehler-Status oder Absturz: nicht sofort wieder,
+            // sonst startet ein abstürzendes Werkzeug im Takt neu
             delay = Self.errorRetryDelay
         } else {
             delay = 0
