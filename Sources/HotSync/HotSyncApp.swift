@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationManager.shared.requestPermission()
         killOrphanedSessions()
+        appState.onAttentionNeeded = { [weak self] in self?.showMainWindow() }
         appState.setup()
     }
 

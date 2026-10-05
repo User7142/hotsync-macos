@@ -47,19 +47,31 @@ final class TabStatus {
     }
 }
 
-/// Ein Palm, den ein automatischer Listener angenommen, aber keinem Tab
-/// zuordnen konnte. Wird oben im Fenster angezeigt, bis der Benutzer ihn
-/// zuordnet oder verwirft.
+/// Etwas an einem Anschluss, das keinem Tab gehört: ein Palm, den ein
+/// automatischer Listener angenommen, aber keinem Tab zuordnen konnte, oder
+/// ein Fehler des Listeners. Wird oben im Fenster angezeigt, bis der
+/// Benutzer es erledigt oder verwirft.
 struct PortNotice: Identifiable, Equatable {
     enum Kind: Equatable {
         /// kein Profil mit Tab an diesem Anschluss kennt ihn
         case unknown(PalmUser)
         /// Palm ohne Benutzer - welches Profil er werden soll, ist offen
         case blank
+        /// der Listener ist gescheitert, bevor ein Palm erkannt war
+        case failed(String)
     }
 
     let id = UUID()
     let port: String
     let kind: Kind
     let date: Date
+}
+
+/// Ein Palm, den HotSync noch nicht kennt: Der Dialog fragt, ob er ein neues
+/// Gerät mit eigenem Tab werden soll.
+struct NewPalmPrompt: Identifiable, Equatable {
+    let id = UUID()
+    let port: String
+    /// nil: Palm ohne Benutzer - der Dialog fragt nach einem Namen
+    let user: PalmUser?
 }

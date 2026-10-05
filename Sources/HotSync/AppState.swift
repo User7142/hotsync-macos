@@ -23,6 +23,10 @@ final class AppState {
     private(set) var queues: [UUID: InstallQueue] = [:]
     private(set) var statuses: [UUID: TabStatus] = [:]
     private(set) var notices: [PortNotice] = []
+    /// Der offene Dialog "Neuer Palm" (höchstens einer zur Zeit)
+    var newPalmPrompt: NewPalmPrompt?
+    /// Holt das Fenster nach vorn, wenn HotSync etwas fragen muss
+    @ObservationIgnored var onAttentionNeeded: (() -> Void)?
     private(set) var activeChain: ActiveChain?
 
     var selectedTabId: UUID?
@@ -164,18 +168,43 @@ final class AppState {
 
     // MARK: - Profile
 
-    /// Neues Profil ohne Palm (User-ID 0) mit einem USB-Tab: Der erste Palm
+    /// Neues Profil ohne Palm (User-ID 0) mit einem Tab: Der erste Palm
     /// ohne Benutzer, der in diesem Tab synct, übernimmt den Namen - ein
     /// schon benutzter Palm lässt sich danach zuordnen.
     @discardableResult
-    func addProfile(name: String, note: String?) -> DeviceProfile {
+    func addProfile(name: String, note: String?, port: String = SyncTab.usbPort) -> DeviceProfile {
         let profile = deviceManager.addProfile(username: name, userId: 0, deviceNote: note)
         makeQueue(for: profile)
-        let tab = SyncTab(profileId: profile.id, port: SyncTab.usbPort, autoListen: true)
+        let tab = SyncTab(profileId: profile.id, port: port, autoListen: true)
         saveTab(tab)
         selectedTabId = tab.id
         showSetup = false
         return profile
+    }
+
+    /// Dialog "Neuer Palm": Ein Palm mit Benutzer wird ein Profil unter
+    /// seinem Namen; ein Palm ohne Benutzer bekommt `name`, und sein Tab
+    /// wartet gezielt auf ihn - beim nächsten HotSync schreibt HotSync ihm
+    /// die Identität des Profils.
+    func createDevice(for prompt: NewPalmPrompt, name: String) {
+        if let user = prompt.user {
+            createProfile(from: user, port: prompt.port)
+        } else {
+            let profile = addProfile(name: name, note: nil, port: prompt.port)
+            notices.removeAll { $0.port == prompt.port && $0.kind == .blank }
+            if let tab = tabStore.tabs.first(where: { $0.profileId == profile.id }) {
+                startTab(tab.id)
+            }
+        }
+        newPalmPrompt = nil
+    }
+
+    /// Ein Palm, der keinem Tab gehört: fragen, ob er ein neues Gerät wird.
+    /// Ein schon offener Dialog bleibt stehen.
+    private func promptNewPalm(_ user: PalmUser?, on port: String) {
+        guard newPalmPrompt == nil else { return }
+        newPalmPrompt = NewPalmPrompt(port: port, user: user)
+        onAttentionNeeded?()
     }
 
     /// Ein unbekannter Palm wird ein neues Profil, mit Tab an dem Anschluss,
@@ -502,6 +531,8 @@ final class AppState {
 
         case .connected(let user, _):
             session.connected = true
+            // ein Palm ist durchgekommen: frühere Fehler hier sind erledigt
+            notices.removeAll { if case .failed = $0.kind { return $0.port == port } else { return false } }
             session.user = user
             portMonitor.recordSighting(user, on: port)
             admit(user, session: session)
@@ -585,10 +616,12 @@ final class AppState {
                 notify(PortNotice(port: port, kind: .unknown(user), date: Date()))
                 endWithoutInstall(session, user: user)
             }
+            promptNewPalm(user, on: port)
 
         case .blank:
             notify(PortNotice(port: port, kind: .blank, date: Date()))
             endWithoutInstall(session, user: user)
+            promptNewPalm(nil, on: port)
         }
     }
 
@@ -708,6 +741,10 @@ final class AppState {
         if case .listener = session.purpose {
             for tab in autoTabs(on: port) {
                 if case .listening = statuses[tab.id]?.phase { statuses[tab.id]?.phase = .idle }
+            }
+            // Ein Listener hat keinen Tab, der das Ergebnis zeigt
+            if session.tabId == nil, !session.stopRequested, case .failed(_, let message) = result {
+                notify(PortNotice(port: port, kind: .failed(message), date: now))
             }
         }
 

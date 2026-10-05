@@ -37,6 +37,13 @@ struct MainView: View {
             handleDrop(providers)
             return true
         }
+        .sheet(item: Binding(
+            get: { appState.newPalmPrompt },
+            set: { appState.newPalmPrompt = $0 }
+        )) { prompt in
+            NewPalmSheet(prompt: prompt)
+                .environment(appState)
+        }
         .sheet(item: $editingTab) { tab in
             TabEditorView(tab: tab)
                 .environment(appState)
@@ -336,8 +343,8 @@ private struct NoticeBanner: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "questionmark.circle.fill")
-                .foregroundStyle(.orange)
+            Image(systemName: isFailure ? "exclamationmark.triangle.fill" : "questionmark.circle.fill")
+                .foregroundStyle(isFailure ? .red : .orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout)
@@ -359,6 +366,11 @@ private struct NoticeBanner: View {
                     appState.createProfile(from: user, port: notice.port)
                 }
             }
+            if case .blank = notice.kind {
+                Button(L10n.newPalmCreate + " …") {
+                    appState.newPalmPrompt = NewPalmPrompt(port: notice.port, user: nil)
+                }
+            }
             Button {
                 appState.dismissNotice(notice.id)
             } label: {
@@ -375,6 +387,72 @@ private struct NoticeBanner: View {
         switch notice.kind {
         case .unknown(let user): return L10n.noticeUnknownPalm(user.name, user.userId)
         case .blank: return L10n.noticeBlankPalm
+        case .failed(let message): return L10n.noticeListenerFailed(message)
         }
+    }
+
+    private var isFailure: Bool {
+        if case .failed = notice.kind { return true }
+        return false
+    }
+}
+
+// MARK: - Neuer Palm
+
+/// Fragt bei einem Palm, den HotSync nicht kennt, ob er ein neues Gerät mit
+/// eigenem Tab werden soll - ein Palm ohne Benutzer bekommt dabei einen Namen.
+private struct NewPalmSheet: View {
+    @Environment(AppState.self) var appState
+    let prompt: NewPalmPrompt
+
+    @State private var name = ""
+
+    /// Palm OS speichert höchstens 40 Zeichen Benutzername
+    private static let maxNameLength = 40
+
+    private var trimmedName: String {
+        String(name.trimmingCharacters(in: .whitespaces).prefix(Self.maxNameLength))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(L10n.newPalmTitle(appState.portLabel(prompt.port)),
+                  systemImage: "arrow.triangle.2.circlepath.circle.fill")
+                .font(.headline)
+            if let user = prompt.user {
+                Text(L10n.newPalmUnknown(user.name, user.userId))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(L10n.newPalmAgainHint)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(L10n.newPalmBlank)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField(L10n.newPalmNamePlaceholder, text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(create)
+                Text(L10n.newPalmBlankHint)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button(L10n.newPalmIgnore) {
+                    appState.newPalmPrompt = nil
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(L10n.newPalmCreate, action: create)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(prompt.user == nil && trimmedName.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private func create() {
+        guard prompt.user != nil || !trimmedName.isEmpty else { return }
+        appState.createDevice(for: prompt, name: trimmedName)
     }
 }

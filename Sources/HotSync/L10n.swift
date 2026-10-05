@@ -253,8 +253,31 @@ enum L10n {
         "Unknown Palm: \(identity(name, userId)) – nothing installed"
     ) }
     static var noticeBlankPalm: String { s(
-        "Ein Palm ohne Benutzer hat sich gemeldet – im Tab seines Profils „Jetzt syncen“ wählen, dann HotSync drücken",
-        "A Palm without a user connected – choose “Sync Now” in its profile's tab, then press HotSync"
+        "Palm ohne Benutzer – als neues Gerät anlegen oder im Tab seines Profils „Jetzt syncen“ wählen und HotSync drücken",
+        "Palm without a user – add it as a new device, or choose “Sync Now” in its profile's tab and press HotSync"
+    ) }
+    static func noticeListenerFailed(_ message: String) -> String { s(
+        "HotSync fehlgeschlagen: \(message)", "HotSync failed: \(message)"
+    ) }
+    static func newPalmTitle(_ port: String) -> String { s("Neuer Palm an \(port)", "New Palm on \(port)") }
+    static func newPalmUnknown(_ name: String, _ userId: UInt32) -> String { s(
+        "\(identity(name, userId)) ist HotSync noch nicht bekannt. Als neues Gerät anlegen? Es bekommt einen eigenen Tab und eine eigene Warteschlange.",
+        "HotSync does not know \(identity(name, userId)) yet. Add it as a new device? It gets its own tab and its own queue."
+    ) }
+    static var newPalmBlank: String { s(
+        "Dieser Palm hat noch keinen Benutzernamen. Unter welchem Namen soll er angelegt werden?",
+        "This Palm has no user name yet. Which name should it get?"
+    ) }
+    static var newPalmNamePlaceholder: String { s("Benutzername, z. B. Thomas LifeDrive", "User name, e.g. Thomas LifeDrive") }
+    static var newPalmCreate: String { s("Als neues Gerät anlegen", "Add as New Device") }
+    static var newPalmIgnore: String { s("Ignorieren", "Ignore") }
+    static var newPalmAgainHint: String { s(
+        "Danach HotSync auf dem Palm noch einmal drücken.",
+        "Then press HotSync on the Palm once more."
+    ) }
+    static var newPalmBlankHint: String { s(
+        "Danach HotSync auf dem Palm noch einmal drücken – der Name wird dabei auf den Palm geschrieben.",
+        "Then press HotSync on the Palm once more – the name is written to the Palm."
     ) }
     static func noticeDetail(_ port: String, _ time: String) -> String { s("\(port) um \(time)", "\(port) at \(time)") }
     static var assignToProfile: String { s("Zuordnen zu …", "Assign to …") }
