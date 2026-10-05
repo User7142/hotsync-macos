@@ -188,8 +188,9 @@ final class InstallQueue {
                     try fm.removeItem(at: dest)
                 }
                 try fm.moveItem(at: item.url, to: dest)
-                DebugLog.shared.log(L10n.logQueueMoved(item.name, target.installDir.lastPathComponent),
-                                    source: "Queue")
+                // ~/HotSync/<Gerät>/Install
+                let device = target.installDir.deletingLastPathComponent().lastPathComponent
+                DebugLog.shared.log(L10n.logQueueMoved(item.name, device), source: "Queue")
             } catch {
                 DebugLog.shared.log(L10n.logQueueMoveFailed(item.name, error.localizedDescription),
                                     source: "Queue")
