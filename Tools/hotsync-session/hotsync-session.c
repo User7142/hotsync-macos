@@ -13,7 +13,9 @@
  *           (Baudrate seriell über PILOTRATE, wie bei pilot-link üblich)
  *
  * stdout:   ein JSON-Objekt pro Zeile (Ereignisse, siehe emit_*)
- * stdin:    eine Anweisung pro Zeile, erst nach "connected":
+ * stdin:    eine Anweisung pro Zeile, erst nach "connected" - solange keine
+ *           kommt (z. B. während die App fragt, ob ein neuer Palm angelegt
+ *           werden soll), hält das Werkzeug die Verbindung zum Palm offen:
  *             install <Pfad>   Datei installieren
  *             setuser <ID> <Name>  Palm ohne Benutzer übernimmt ein Profil
  *             log <Text>       Eintrag ins HotSync-Log des Palms
@@ -23,11 +25,13 @@
  */
 
 #include <errno.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "pi-dlp.h"
 #include "pi-file.h"
@@ -349,13 +353,43 @@ static void write_user(int sd, const char *args)
 	emit_end();
 }
 
+/* Abstand der Lebenszeichen an den Palm, solange keine Anweisung kommt -
+ * ohne sie bricht der Palm die Sitzung nach einer Weile ab. */
+#define TICKLE_INTERVAL_MS	5000
+
+/* Wartet, bis eine Anweisung lesbar ist, und hält den Palm solange mit
+ * Lebenszeichen wach. 0, wenn der Palm nicht mehr antwortet. */
+static int wait_for_command(int sd)
+{
+	struct pollfd in = { .fd = STDIN_FILENO, .events = POLLIN };
+
+	for (;;) {
+		int ready = poll(&in, 1, TICKLE_INTERVAL_MS);
+
+		if (ready > 0)
+			return 1;
+		if (ready < 0 && errno != EINTR) {
+			emit_error("command", "cannot wait for commands (%s)", strerror(errno));
+			return 0;
+		}
+		if (ready == 0 && pi_tickle(sd) < 0) {
+			emit_error("tickle", "the Palm does not answer any more");
+			return 0;
+		}
+	}
+}
+
 /* Liest Anweisungen bis "end" oder EOF. Bei EOF (App weg) wird die
  * Sitzung trotzdem sauber beendet, damit der Palm nicht hängen bleibt. */
 static void run_commands(int sd)
 {
 	char line[4096];
 
-	while (fgets(line, sizeof(line), stdin) != NULL) {
+	/* ungepuffert: was poll() als lesbar meldet, liegt nicht schon in
+	 * einem stdio-Puffer, auf den poll() nicht schaut */
+	setvbuf(stdin, NULL, _IONBF, 0);
+
+	while (wait_for_command(sd) && fgets(line, sizeof(line), stdin) != NULL) {
 		line[strcspn(line, "\r\n")] = '\0';
 
 		if (strncmp(line, "install ", 8) == 0) {
