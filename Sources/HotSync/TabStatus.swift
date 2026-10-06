@@ -72,6 +72,11 @@ struct PortNotice: Identifiable, Equatable {
 struct NewPalmPrompt: Identifiable, Equatable {
     let id = UUID()
     let port: String
-    /// nil: Palm ohne Benutzer - der Dialog fragt nach einem Namen
-    let user: PalmUser?
+    /// Wer sich gemeldet hat. Ohne User-ID (`isBlank`) fragt der Dialog nach
+    /// einem Namen - vorbelegt mit dem, den der Palm schon trägt.
+    let user: PalmUser
+    /// Die Sitzung, in der der Palm noch verbunden ist und auf die Antwort
+    /// wartet; nil, wenn die Verbindung schon zu ist (nur bei einem Palm mit
+    /// Benutzer - der ist an seiner ID auch beim nächsten HotSync eindeutig).
+    let sessionToken: Int?
 }

@@ -182,34 +182,68 @@ final class AppState {
         return profile
     }
 
-    /// Dialog "Neuer Palm": Ein Palm mit Benutzer wird ein Profil unter
-    /// seinem Namen; ein Palm ohne Benutzer bekommt `name`, und sein Tab
-    /// wartet gezielt auf ihn - beim nächsten HotSync schreibt HotSync ihm
-    /// die Identität des Profils.
+    /// Dialog "Neuer Palm", "Anlegen": Der Palm wird ein Profil unter `name`.
+    /// Ist er noch verbunden, geht es in derselben Sitzung weiter - ein Palm
+    /// ohne Benutzer bekommt dort die Identität des Profils geschrieben (nur
+    /// so ist sicher, dass es genau dieser Palm ist), ein umbenannter seinen
+    /// neuen Namen; dann wird installiert. Ohne Verbindung (nur ein Palm mit
+    /// Benutzer) bleibt sein Name.
     func createDevice(for prompt: NewPalmPrompt, name: String) {
-        if let user = prompt.user {
-            createProfile(from: user, port: prompt.port)
-        } else {
-            let profile = addProfile(name: name, note: nil, port: prompt.port)
-            notices.removeAll { $0.port == prompt.port && $0.kind == .blank }
-            if let tab = tabStore.tabs.first(where: { $0.profileId == profile.id }) {
-                startTab(tab.id)
-            }
-        }
         newPalmPrompt = nil
+        let session = waitingSession(for: prompt)
+        session?.awaitingDecision = false
+
+        if !prompt.user.isBlank {
+            var user = prompt.user
+            // umbenannt: neuer Name auf den Palm, die ID bleibt
+            if let session, !name.isEmpty, name != user.name {
+                user = PalmUser(name: name, userId: user.userId)
+                session.runner.send("setuser \(user.userId) \(name)")
+            }
+            let profile = createProfile(from: user, port: prompt.port)
+            if let session { install(profile.id, user: user, session: session) }
+        } else if let session {
+            let profile = addProfile(name: name, note: nil, port: prompt.port)
+            adopt(profile.id, session: session)
+        }
+    }
+
+    /// Dialog "Neuer Palm", "Ignorieren": Die Sitzung endet ohne
+    /// Installation, der Hinweis oben im Fenster bleibt.
+    func ignoreNewPalm(_ prompt: NewPalmPrompt) {
+        newPalmPrompt = nil
+        guard let session = waitingSession(for: prompt), let user = session.user else { return }
+        session.awaitingDecision = false
+        notify(PortNotice(port: prompt.port, kind: user.isBlank ? .blank : .unknown(user), date: Date()))
+        endWithoutInstall(session, user: user)
+    }
+
+    /// Die Sitzung, in der der Palm des Dialogs noch auf die Antwort wartet.
+    private func waitingSession(for prompt: NewPalmPrompt) -> Session? {
+        guard let token = prompt.sessionToken, let session = sessions[prompt.port],
+              session.token == token, session.awaitingDecision else { return nil }
+        return session
     }
 
     /// Ein Palm, der keinem Tab gehört: fragen, ob er ein neues Gerät wird.
-    /// Ein schon offener Dialog bleibt stehen.
-    private func promptNewPalm(_ user: PalmUser?, on port: String) {
-        guard newPalmPrompt == nil else { return }
-        newPalmPrompt = NewPalmPrompt(port: port, user: user)
+    /// Die Sitzung bleibt offen, bis der Benutzer antwortet (das Werkzeug
+    /// hält den Palm so lange wach). Steht schon ein Dialog, endet sie.
+    private func promptNewPalm(_ user: PalmUser, session: Session) {
+        let port = session.runner.port
+        guard newPalmPrompt == nil else {
+            notify(PortNotice(port: port, kind: user.isBlank ? .blank : .unknown(user), date: Date()))
+            endWithoutInstall(session, user: user)
+            return
+        }
+        session.awaitingDecision = true
+        newPalmPrompt = NewPalmPrompt(port: port, user: user, sessionToken: session.token)
         onAttentionNeeded?()
     }
 
     /// Ein unbekannter Palm wird ein neues Profil, mit Tab an dem Anschluss,
     /// an dem er sich gemeldet hat.
-    func createProfile(from user: PalmUser, port: String) {
+    @discardableResult
+    func createProfile(from user: PalmUser, port: String) -> DeviceProfile {
         let name = user.name.isEmpty ? "Palm" : user.name
         let profile = deviceManager.addProfile(username: name, userId: UInt(user.userId), deviceNote: nil)
         makeQueue(for: profile)
@@ -217,6 +251,7 @@ final class AppState {
         saveTab(tab)
         selectedTabId = tab.id
         forget(user)
+        return profile
     }
 
     /// Ordnet einem Profil einen Palm zu: ab dem nächsten HotSync erkennt
@@ -460,6 +495,8 @@ final class AppState {
         var user: PalmUser?
         var connected = false
         var admitted = false
+        /// verbunden, der Dialog "Neuer Palm" wartet auf die Antwort
+        var awaitingDecision = false
         var files: [URL] = []
         var results = 0
         var installed: Set<URL> = []
@@ -596,33 +633,41 @@ final class AppState {
             install(profileId, user: user, session: session)
 
         case .adopt(let profileId):
-            guard let profile = deviceManager.profile(profileId) else { return }
-            // Ein schon gebundenes Profil gibt seine ID zurück (z. B. nach einem
-            // Hard Reset des Palms); ein neues bekommt eine eigene.
-            let userId = profile.isBound
-                ? UInt32(truncatingIfNeeded: profile.userId)
-                : UInt32.random(in: 1_000_000...0x7FFF_FFFF)
-            session.runner.send("setuser \(userId) \(profile.username)")
-            if let tabId = session.tabId { tabLog(tabId, L10n.logAdopting(profile.username)) }
-            install(profileId, user: PalmUser(name: profile.username, userId: userId), session: session)
+            adopt(profileId, session: session)
 
         case .wrongPalm(_, let owner):
             reject(session, .wrongPalm(found: user, owner: owner), user: user)
 
         case .unknown:
             if case .tab = session.purpose {
+                // Der Tab zeigt die Ablehnung; der Palm ist an seiner ID
+                // eindeutig und kann auch ohne offene Sitzung angelegt werden
                 reject(session, .unknown(user), user: user)
+                if newPalmPrompt == nil {
+                    newPalmPrompt = NewPalmPrompt(port: port, user: user, sessionToken: nil)
+                    onAttentionNeeded?()
+                }
             } else {
-                notify(PortNotice(port: port, kind: .unknown(user), date: Date()))
-                endWithoutInstall(session, user: user)
+                promptNewPalm(user, session: session)
             }
-            promptNewPalm(user, on: port)
 
         case .blank:
-            notify(PortNotice(port: port, kind: .blank, date: Date()))
-            endWithoutInstall(session, user: user)
-            promptNewPalm(nil, on: port)
+            promptNewPalm(user, session: session)
         }
+    }
+
+    /// Ein Palm ohne Benutzer übernimmt ein Profil: HotSync schreibt ihm
+    /// Name und ID, dann wird installiert.
+    private func adopt(_ profileId: UUID, session: Session) {
+        guard let profile = deviceManager.profile(profileId) else { return }
+        // Ein schon gebundenes Profil gibt seine ID zurück (z. B. nach einem
+        // Hard Reset des Palms); ein neues bekommt eine eigene.
+        let userId = profile.isBound
+            ? UInt32(truncatingIfNeeded: profile.userId)
+            : UInt32.random(in: 1_000_000...0x7FFF_FFFF)
+        session.runner.send("setuser \(userId) \(profile.username)")
+        install(profileId, user: PalmUser(name: profile.username, userId: userId), session: session)
+        if let tabId = session.tabId { tabLog(tabId, L10n.logAdopting(profile.username)) }
     }
 
     private func install(_ profileId: UUID, user: PalmUser, session: Session) {
@@ -697,6 +742,14 @@ final class AppState {
             sessions[port] = nil
         }
         let now = Date()
+
+        // Der Palm ist weg, bevor der Benutzer im Dialog geantwortet hat
+        if session.awaitingDecision, let user = session.user {
+            if newPalmPrompt?.sessionToken == session.token {
+                newPalmPrompt = nil
+            }
+            notify(PortNotice(port: port, kind: user.isBlank ? .blank : .unknown(user), date: now))
+        }
 
         // Warteschlange: Bestätigtes nach Installed/, der Rest bleibt mit Grund
         if session.admitted, let profileId = session.profileId, let queue = queues[profileId] {

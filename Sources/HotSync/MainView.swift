@@ -39,7 +39,7 @@ struct MainView: View {
         }
         .sheet(item: Binding(
             get: { appState.newPalmPrompt },
-            set: { appState.newPalmPrompt = $0 }
+            set: { if $0 == nil, let prompt = appState.newPalmPrompt { appState.ignoreNewPalm(prompt) } }
         )) { prompt in
             NewPalmSheet(prompt: prompt)
                 .environment(appState)
@@ -366,11 +366,7 @@ private struct NoticeBanner: View {
                     appState.createProfile(from: user, port: notice.port)
                 }
             }
-            if case .blank = notice.kind {
-                Button(L10n.newPalmCreate + " …") {
-                    appState.newPalmPrompt = NewPalmPrompt(port: notice.port, user: nil)
-                }
-            }
+
             Button {
                 appState.dismissNotice(notice.id)
             } label: {
@@ -419,40 +415,49 @@ private struct NewPalmSheet: View {
             Label(L10n.newPalmTitle(appState.portLabel(prompt.port)),
                   systemImage: "arrow.triangle.2.circlepath.circle.fill")
                 .font(.headline)
-            if let user = prompt.user {
-                Text(L10n.newPalmUnknown(user.name, user.userId))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(L10n.newPalmAgainHint)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(L10n.newPalmBlank)
-                    .fixedSize(horizontal: false, vertical: true)
+            Text(prompt.user.isBlank
+                 ? L10n.newPalmBlank
+                 : L10n.newPalmUnknown(prompt.user.name, prompt.user.userId))
+                .fixedSize(horizontal: false, vertical: true)
+            if nameEditable {
                 TextField(L10n.newPalmNamePlaceholder, text: $name)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(create)
-                Text(L10n.newPalmBlankHint)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
+            Text(hint)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button(L10n.newPalmIgnore) {
-                    appState.newPalmPrompt = nil
+                    appState.ignoreNewPalm(prompt)
                 }
                 .keyboardShortcut(.cancelAction)
                 Button(L10n.newPalmCreate, action: create)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(prompt.user == nil && trimmedName.isEmpty)
+                    .disabled(nameEditable && trimmedName.isEmpty)
             }
         }
         .padding(20)
         .frame(width: 420)
+        // Vorbelegt mit dem Namen, den der Palm trägt - auch ein Palm ohne
+        // User-ID kann schon einen haben (z. B. von einem anderen Desktop)
+        .onAppear { name = prompt.user.name }
+    }
+
+    /// Ein Name lässt sich nur wählen, solange der Palm verbunden ist: Er
+    /// wird ihm in derselben Sitzung geschrieben.
+    private var nameEditable: Bool { prompt.sessionToken != nil }
+
+    private var hint: String {
+        if !nameEditable { return L10n.newPalmAgainHint }
+        if prompt.user.isBlank { return L10n.newPalmBlankHint }
+        return trimmedName == prompt.user.name ? L10n.newPalmWaitingHint : L10n.newPalmRenameHint
     }
 
     private func create() {
-        guard prompt.user != nil || !trimmedName.isEmpty else { return }
+        guard !nameEditable || !trimmedName.isEmpty else { return }
         appState.createDevice(for: prompt, name: trimmedName)
     }
 }
