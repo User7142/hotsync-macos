@@ -29,7 +29,8 @@ The licenses of the included pilot-link library (libpisock) and libusb are in
 - **Install queue** &ndash; `.prc`/`.pdb`/`.pqa` files via drag & drop, double-click in the Finder, or the install folder; the queue always shows the folder's content, whichever way a file got there
 - **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, **version** (of an application: its `tver` resource), type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, …) are marked red and never sent
 - **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
-- **New Palms are asked about** &ndash; a Palm HotSync does not know yet brings up a dialog while it waits in the cradle: add it as a new device with its own tab and queue, under its own name or a new one. A Palm without a user name (new or after a hard reset) gets its name there. Name and ID are written to that very Palm in the same HotSync, which then goes on to install its queue
+- **New Palms are asked about** &ndash; a Palm HotSync does not know yet brings up a dialog while it waits in the cradle: add it as a new device with its own tab and queue, under its own name or a new one. A Palm without a user name (new or after a hard reset) gets its name there. Name and ID are written to that very Palm in the same HotSync, which then goes on to install its queue. A name that already belongs to a device (say, a Palm after a hard reset) offers to take that device over: the Palm gets its name and ID back, with its tab, queue and installed files
+- **The window follows the HotSync** &ndash; when a Palm connects, the window switches to its tab
 - **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
 - **Move to another Palm** &ndash; drag queued files onto the tab of another device or use "Move to" in the context menu; select several with shift-click (range) and command-click, as in the Finder
 - **Tabs: a Palm on a port** &ndash; as many as you like: "m515 · USB", "IIIx · cu.usbserial-A1". The same Palm can have a USB and a serial tab; the queue belongs to the Palm
@@ -96,26 +97,23 @@ Unit tests (file checks, session protocol, Palm recognition, chains): `./Scripts
 Requirements: macOS 14+, Swift and C command line tools, and from Homebrew:
 
 ```bash
-brew install libusb libusb-compat autoconf automake libtool pkg-config
+brew install autoconf automake libtool pkg-config popt
 ```
 
 pilot-link does not need to be installed: the build script builds its library `libpisock` itself
 (`Scripts/build-pilot-link.sh`, into `.build/pilot-link`) from the commit pinned in
-`Vendor/pilot-link/COMMIT` plus the patches in `Vendor/pilot-link/patches`, and only rebuilds it
-when one of them changes. The tagged 0.15.0/0.15.1 sources do not find any USB device on macOS
-&ndash; this was fixed upstream in commit `c32f9eed`. The patches on top:
+`Vendor/pilot-link/COMMIT`, plus any patches in `Vendor/pilot-link/patches` for fixes that are not
+upstream yet, and only rebuilds it when one of them changes. The pinned commit is the upstream
+`main` with the USB fixes from [pilot-link PR #49](https://github.com/desrod/pilot-link/pull/49)
+(high-speed Palms such as the LifeDrive, Sony CLIE devices, no hanging listener, recovery from a
+stalled USB pipe), so no patches are needed at the moment. The tagged 0.15.0/0.15.1 sources do not
+find any USB device on macOS &ndash; this was fixed upstream in commit `c32f9eed`.
 
-- `0001` accepts high-speed (512-byte) bulk endpoints &ndash; without it a LifeDrive is never seen
-- `0002` gives the device a second to answer each USB configuration request instead of waiting
-  forever &ndash; a device that does not answer used to block the listener for good
-- `0003` keeps a failed connection-info request failed for Tapwave-flagged devices
-  (0x0830:0x0061: Zire 31/72, Z22, LifeDrive) instead of going on with guessed USB pipes
-- `0004` gives the Sony CLIE configuration requests a buffer for their answer &ndash; without it
-  the sync tool crashed on every HotSync of a CLIE such as the NR70V
-- `0005` takes the bulk endpoints of a device that does not support the connection-info request
-  (it stalls it) instead of skipping it forever &ndash; without it a CLIE N770C never syncs
-- `0006` clears a stalled input pipe (libusb-compat reports it as `-EPIPE`) &ndash; without it a single
-  "device not responding" from the Palm left the reader spinning until the session timed out
+libusb and libusb-compat are built the same way (`Scripts/build-libusb.sh`, into `.build/libusb`;
+`Vendor/libusb`, `Vendor/libusb-compat`), and libpisock is built against them, not against
+Homebrew's: libusb 1.0.30 with libusb commit `94a5224e` on top ("darwin: avoid hotplug shutdown
+deadlock", in `Vendor/libusb/patches`). Without it, a sync tool that exits right after a Palm was
+unplugged can hang in `libusb_exit` for good &ndash; 1.0.30 and earlier have that deadlock on macOS.
 
 ```bash
 # Optional: regenerate the icon (Resources/AppIcon.icns is already included)
@@ -131,7 +129,7 @@ open HotSync.app
 The build script:
 1. compiles with `swift build -c release`
 2. creates the `.app` bundle with `Info.plist`
-3. builds libpisock from pilot-link plus patches (see above), compiles `Tools/hotsync-session/hotsync-session.c` against libpisock, copies it and all its
+3. builds libusb, libusb-compat and libpisock (see above), compiles `Tools/hotsync-session/hotsync-session.c` against libpisock, copies it and all its
    non-system libraries (libpisock, libusb-compat, libusb &ndash; found recursively) into the
    bundle and rewrites the references to `@rpath`, so the app does not depend on Homebrew; the
    build fails if any reference outside the bundle is left
@@ -174,6 +172,5 @@ Pull requests are welcome.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). pilot-link, whose library is built with the patches in
-`Vendor/pilot-link/patches` and copied into the app bundle at build time, is licensed under the
-GPL/LGPL.
+MIT, see [LICENSE](LICENSE). pilot-link, whose library is copied into the app bundle at build
+time, is licensed under the GPL/LGPL.
