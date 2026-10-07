@@ -279,6 +279,15 @@ enum L10n {
         "Der Palm wartet, bis du hier antwortest – danach wird gleich installiert.",
         "The Palm waits for your answer here – its queue is installed right after."
     ) }
+    static func newPalmExisting(_ name: String) -> String { s(
+        "Es gibt schon ein Gerät „\(name)“. Ist das dieser Palm, z. B. nach einem Hard Reset? Für ein neues Gerät einen anderen Namen wählen.",
+        "There is already a device “\(name)”. Is it this Palm, e.g. after a hard reset? For a new device, choose another name."
+    ) }
+    static func newPalmTakeOver(_ name: String) -> String { s("„\(name)“ übernehmen", "Take Over “\(name)”") }
+    static var newPalmTakeOverHint: String { s(
+        "Der Palm bekommt Name und ID des Geräts zurück – mit Tab, Warteschlange und Installiertem. Er wartet, bis du hier antwortest.",
+        "The Palm gets the device's name and ID back – with its tab, queue and installed files. It waits for your answer here."
+    ) }
     static var newPalmRenameHint: String { s(
         "Der Palm wartet, bis du hier antwortest. Der neue Name wird ihm gleich in diesem HotSync geschrieben, seine ID bleibt.",
         "The Palm waits for your answer here. The new name is written to it in this very HotSync; its ID stays."

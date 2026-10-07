@@ -208,6 +208,25 @@ final class AppState {
         }
     }
 
+    /// Dialog "Neuer Palm", "übernehmen": Der Palm ist ein Gerät, das HotSync
+    /// schon kennt - etwa nach einem Hard Reset. Er bekommt in derselben
+    /// Sitzung Name und ID dieses Profils zurück, dann dessen Warteschlange.
+    func takeOverDevice(for prompt: NewPalmPrompt, profileId: UUID) {
+        newPalmPrompt = nil
+        guard let session = waitingSession(for: prompt) else { return }
+        session.awaitingDecision = false
+        // install() sucht den Tab des Profils unter den Auto-Tabs des Anschlusses
+        if !autoTabs(on: prompt.port).contains(where: { $0.profileId == profileId }) {
+            saveTab(SyncTab(profileId: profileId, port: prompt.port, autoListen: true))
+        }
+        adopt(profileId, session: session)
+    }
+
+    /// Das Gerät, dessen Name `name` ist (ohne Rücksicht auf Groß-/Kleinschreibung).
+    func profile(named name: String) -> DeviceProfile? {
+        deviceManager.profiles.first { $0.username.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
     /// Dialog "Neuer Palm", "Ignorieren": Die Sitzung endet ohne
     /// Installation, der Hinweis oben im Fenster bleibt.
     func ignoreNewPalm(_ prompt: NewPalmPrompt) {
@@ -681,6 +700,8 @@ final class AppState {
             session.runner.send("end")
             return
         }
+        // Das Fenster zeigt den Tab, der gerade synct
+        selectedTabId = tabId
 
         let files = queue.pendingFiles
         session.files = files

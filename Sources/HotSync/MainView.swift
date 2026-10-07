@@ -422,7 +422,12 @@ private struct NewPalmSheet: View {
             if nameEditable {
                 TextField(L10n.newPalmNamePlaceholder, text: $name)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit(create)
+                    .onSubmit(submit)
+            }
+            if let existing {
+                Label(L10n.newPalmExisting(existing.username), systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text(hint)
                 .font(.callout)
@@ -434,9 +439,16 @@ private struct NewPalmSheet: View {
                     appState.ignoreNewPalm(prompt)
                 }
                 .keyboardShortcut(.cancelAction)
-                Button(L10n.newPalmCreate, action: create)
+                if let existing {
+                    Button(L10n.newPalmTakeOver(existing.username)) {
+                        appState.takeOverDevice(for: prompt, profileId: existing.id)
+                    }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(nameEditable && trimmedName.isEmpty)
+                } else {
+                    Button(L10n.newPalmCreate, action: submit)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(nameEditable && trimmedName.isEmpty)
+                }
             }
         }
         .padding(20)
@@ -450,13 +462,26 @@ private struct NewPalmSheet: View {
     /// wird ihm in derselben Sitzung geschrieben.
     private var nameEditable: Bool { prompt.sessionToken != nil }
 
+    /// Ein Gerät, das schon so heißt - dann wird übernommen statt ein
+    /// zweites gleichen Namens angelegt (z. B. ein Palm nach einem Hard Reset).
+    /// Nur mit offener Sitzung: Übernehmen schreibt dem Palm dessen ID.
+    private var existing: DeviceProfile? {
+        guard nameEditable, !trimmedName.isEmpty else { return nil }
+        return appState.profile(named: trimmedName)
+    }
+
     private var hint: String {
         if !nameEditable { return L10n.newPalmAgainHint }
+        if existing != nil { return L10n.newPalmTakeOverHint }
         if prompt.user.isBlank { return L10n.newPalmBlankHint }
         return trimmedName == prompt.user.name ? L10n.newPalmWaitingHint : L10n.newPalmRenameHint
     }
 
-    private func create() {
+    private func submit() {
+        if let existing {
+            appState.takeOverDevice(for: prompt, profileId: existing.id)
+            return
+        }
         guard !nameEditable || !trimmedName.isEmpty else { return }
         appState.createDevice(for: prompt, name: trimmedName)
     }
