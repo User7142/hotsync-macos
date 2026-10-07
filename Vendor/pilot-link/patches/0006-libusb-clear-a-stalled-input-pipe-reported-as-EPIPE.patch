@@ -1,0 +1,43 @@
+From e242b76cd7be72b62e6f38d4443ad40231d325a3 Mon Sep 17 00:00:00 2001
+From: User7142 <5984280+User7142@users.noreply.github.com>
+Date: Wed, 7 Oct 2026 13:22:14 +0200
+Subject: [PATCH] libusb: clear a stalled input pipe reported as -EPIPE
+
+RD_do_read clears the halt of the input pipe only for -(ELAST + 1), the
+code the old libusb-0.1 used for a stall. libusb-compat reports a stall
+as -EPIPE, which fell through to the generic error branch: every
+following read failed at once, and the reader thread spun - 2.8 million
+failed reads in 30 seconds - until the DLP request timed out and the
+session was lost.
+
+On macOS a single "device not responding" from the device (seen with a
+CLIE N770C in the middle of an install) leaves the pipe stalled this
+way. Clear the halt on -EPIPE as well.
+---
+ libpisock/libusb.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/libpisock/libusb.c b/libpisock/libusb.c
+index 1d60fb60..c0873523 100644
+--- a/libpisock/libusb.c
++++ b/libpisock/libusb.c
+@@ -363,6 +363,16 @@ RD_do_read (int timeout)
+ 			usb_clear_halt (USB_handle, USB_in_endpoint);
+ 			return;
+ #endif
++		} else if (bytes_read == -EPIPE) {
++			/* The pipe is stalled - on macOS after a single "device
++			 * not responding" from the device. libusb-compat reports
++			 * that as -EPIPE (the -(ELAST + 1) above is the old
++			 * libusb-0.1 code for it). Until the halt is cleared every
++			 * read fails at once, and the reader spins until the
++			 * session times out. */
++			LOG((PI_DBG_DEV, PI_DBG_LVL_INFO, "libusb: input pipe stalled, clearing the halt\n"));
++			usb_clear_halt (USB_handle, USB_in_endpoint);
++			return;
+ 		} else if (bytes_read == -ETIMEDOUT)
+ 			return;
+ 
+-- 
+2.50.1 (Apple Git-155)
+

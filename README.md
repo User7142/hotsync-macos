@@ -114,6 +114,8 @@ when one of them changes. The tagged 0.15.0/0.15.1 sources do not find any USB d
   the sync tool crashed on every HotSync of a CLIE such as the NR70V
 - `0005` takes the bulk endpoints of a device that does not support the connection-info request
   (it stalls it) instead of skipping it forever &ndash; without it a CLIE N770C never syncs
+- `0006` clears a stalled input pipe (libusb-compat reports it as `-EPIPE`) &ndash; without it a single
+  "device not responding" from the Palm left the reader spinning until the session timed out
 
 ```bash
 # Optional: regenerate the icon (Resources/AppIcon.icns is already included)
