@@ -6,18 +6,17 @@ under the MIT license; `hotsync-session` uses libpisock as a dynamically linked 
 
 | Component | Files in the app bundle | License | Source code |
 |---|---|---|---|
-| pilot-link 0.15.1 (commit `1dfacd6c`) with 6 patches, library only | `Contents/Frameworks/libpisock.9.dylib` | LGPL-2.0 | https://github.com/desrod/pilot-link/tree/1dfacd6c3f7650883779ecf24b02432b7a1069b6 plus the patches in https://github.com/User7142/hotsync-macos/tree/v1.1.8/Vendor/pilot-link/patches |
+| pilot-link 0.15.1 (commit `f9e34e6a`), library only | `Contents/Frameworks/libpisock.9.dylib` | LGPL-2.0 | https://github.com/desrod/pilot-link/tree/f9e34e6a339bcd83c926ba564cb306a5c2c48495 |
 | libusb-compat 0.1.9 | `Contents/Frameworks/libusb-0.1.4.dylib` | LGPL-2.1 | https://github.com/libusb/libusb-compat-0.1/releases/tag/v0.1.9 |
-| libusb 1.0.29 | `Contents/Frameworks/libusb-1.0.0.dylib` | LGPL-2.1 | https://github.com/libusb/libusb/releases/tag/v1.0.29 |
+| libusb 1.0.30 with 1 patch | `Contents/Frameworks/libusb-1.0.0.dylib` | LGPL-2.1 | https://github.com/libusb/libusb/releases/tag/v1.0.30 plus https://github.com/libusb/libusb/commit/94a5224ea1a7515c38c618694e8794e058c16412 (also in https://github.com/User7142/hotsync-macos/tree/v1.1.9/Vendor/libusb/patches) |
 
-libusb-compat and libusb are used unmodified. pilot-link is modified by six patches
-(USB support for high-speed Palms such as the LifeDrive, timeouts for USB configuration
-requests, support for Sony CLIE devices, recovery from a stalled USB pipe); they are in the HotSync source repository under `Vendor/pilot-link/patches`, and
-`Scripts/build-pilot-link.sh` there applies them and builds the library with:
+pilot-link and libusb-compat are used unmodified. libusb is 1.0.30 with one upstream fix
+applied, libusb commit 94a5224e "darwin: avoid hotplug shutdown deadlock" (not in a libusb
+release yet). All three are built from source by `Scripts/build-libusb.sh` and
+`Scripts/build-pilot-link.sh` in the HotSync source repository; pilot-link with:
 
 ```
-CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib" \
-  ./configure --enable-libusb
+./configure --enable-libusb   # against the libusb/libusb-compat built before
 ```
 
 The library references were rewritten to `@rpath` with `install_name_tool` so that the
