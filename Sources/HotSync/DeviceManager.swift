@@ -104,6 +104,18 @@ final class DeviceManager {
         profileDirectory(for: profile).appendingPathComponent("Backup")
     }
 
+    /// Das ROM-Abbild eines Palms (nur bis Palm OS 4 auslesbar)
+    func romDirectory(for profile: DeviceProfile) -> URL {
+        profileDirectory(for: profile).appendingPathComponent("ROM")
+    }
+
+    func updateRomVersion(_ romVersion: UInt32, for profileId: UUID) {
+        guard romVersion != 0, let index = profiles.firstIndex(where: { $0.id == profileId }),
+              profiles[index].romVersion != romVersion else { return }
+        profiles[index].romVersion = romVersion
+        saveProfiles()
+    }
+
     func updateLastBackup(for profileId: UUID) {
         guard let index = profiles.firstIndex(where: { $0.id == profileId }) else { return }
         profiles[index].lastBackupAt = Date()

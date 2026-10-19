@@ -309,6 +309,7 @@ final class AppState {
         statuses[tabId]?.lastResult = nil
         statuses[tabId]?.lastBackup = nil
         statuses[tabId]?.lastRestore = nil
+        statuses[tabId]?.lastROMDump = nil
     }
 
     // MARK: - Sicherung
@@ -317,6 +318,13 @@ final class AppState {
     /// zurückgeht (vor den Installationen). Gilt, bis das geschehen ist
     /// oder die App endet.
     private(set) var restoreRequests: Set<UUID> = []
+
+    /// Profile, deren ROM beim nächsten HotSync ausgelesen wird (zum Schluss)
+    private(set) var romRequests: Set<UUID> = []
+
+    func requestROMDump(_ dump: Bool, for profileId: UUID) {
+        if dump { romRequests.insert(profileId) } else { romRequests.remove(profileId) }
+    }
 
     func requestRestore(_ restore: Bool, for profileId: UUID) {
         if restore { restoreRequests.insert(profileId) } else { restoreRequests.remove(profileId) }
@@ -580,7 +588,7 @@ final class AppState {
         var rejection: TabStatus.Rejection?
         /// Ablauf einer angenommenen Sitzung: zurückspielen (falls angefragt),
         /// die Warteschlange installieren, sichern (falls eingeschaltet)
-        enum Stage { case restoring, installing, backingUp }
+        enum Stage { case restoring, installing, backingUp, dumpingROM }
         var stage: Stage = .installing
         var restoreFiles: [URL] = []
         var restoreDone = 0
@@ -592,6 +600,11 @@ final class AppState {
         var backupUnchanged = 0
         var backupFailed = 0
         var backupFinished = false
+        var romVersion: UInt32 = 0
+        var romRequested = false
+        var romTotal = 0
+        var romDone = 0
+        var romResult: TabStatus.ROMDump?
         var timedOut = false
         var errorMessage: String?
         var stopRequested = false
@@ -656,8 +669,9 @@ final class AppState {
         case .timeout:
             session.timedOut = true
 
-        case .connected(let user, _):
+        case .connected(let user, let romVersion):
             session.connected = true
+            session.romVersion = romVersion
             // ein Palm ist durchgekommen: frühere Fehler hier sind erledigt
             notices.removeAll { if case .failed = $0.kind { return $0.port == port } else { return false } }
             session.user = user
@@ -731,10 +745,35 @@ final class AppState {
             // vollständig nur, wenn jede Datenbank durch ist (nicht abgebrochen)
             session.backupFinished = session.backupDone >= session.backupTotal
             if let tabId = session.tabId { tabLog(tabId, L10n.logBackupFinished(saved, unchanged, failed)) }
+            afterBackup(session)
+
+        case .romStarted(let file, let version, let total):
+            session.romTotal = total
+            romProgress(session)
+            if let tabId = session.tabId { tabLog(tabId, L10n.logROMStarting(version, total, file)) }
+
+        case .romProgress(let bytes):
+            session.romDone = bytes
+            romProgress(session)
+
+        case .romFinished(let file, let bytes):
+            session.romResult = .saved(file: file, bytes: bytes)
+            if let tabId = session.tabId { tabLog(tabId, L10n.logROMFinished(file, bytes)) }
+            endSession(session)
+
+        case .romUnsupported(let version):
+            session.romResult = .unsupported(version: version)
+            if let tabId = session.tabId { tabLog(tabId, L10n.logROMUnsupported(version)) }
             endSession(session)
 
         case .finished:
             break
+
+        case .error(_, let message) where session.stage == .dumpingROM:
+            // ein Fehler beendet das Auslesen; die Sitzung selbst ist heil
+            session.romResult = .failed(message: message)
+            if let tabId = session.tabId { tabLog(tabId, L10n.logROMFailed(message)) }
+            endSession(session)
 
         case .error(let stage, let message):
             session.errorMessage = "\(stage): \(message)"
@@ -797,8 +836,11 @@ final class AppState {
             ? UInt32(truncatingIfNeeded: profile.userId)
             : UInt32.random(in: 1_000_000...0x7FFF_FFFF)
         session.runner.send("setuser \(userId) \(profile.username)")
+        // vor install(): das legt los und schreibt sonst seine Zeilen zuerst
+        if let tabId = session.tabId ?? autoTabs(on: session.runner.port).first(where: { $0.profileId == profileId })?.id {
+            tabLog(tabId, L10n.logAdopting(profile.username))
+        }
         install(profileId, user: PalmUser(name: profile.username, userId: userId), session: session)
-        if let tabId = session.tabId { tabLog(tabId, L10n.logAdopting(profile.username)) }
     }
 
     private func install(_ profileId: UUID, user: PalmUser, session: Session) {
@@ -818,15 +860,18 @@ final class AppState {
         let files = queue.pendingFiles
         session.files = files
         queue.beginInstall(files, session: session.token)
+        deviceManager.updateRomVersion(session.romVersion, for: profileId)
         if restoreRequests.remove(profileId) != nil {
             session.restoreFiles = backupFiles(for: profileId)
         }
+        session.romRequested = romRequests.remove(profileId) != nil
         // Nach dem Zurückspielen nicht gleich wieder sichern: der Palm hat
         // gerade die Sicherung bekommen
         session.backupEnabled = (tabStore.tab(tabId)?.isFullSync ?? false) && session.restoreFiles.isEmpty
         statuses[tabId]?.lastResult = nil
         statuses[tabId]?.lastBackup = nil
         statuses[tabId]?.lastRestore = nil
+        statuses[tabId]?.lastROMDump = nil
         tabLog(tabId, L10n.logPalmConnected(user.name, user.userId, files.count))
 
         if session.restoreFiles.isEmpty {
@@ -890,11 +935,11 @@ final class AppState {
         }
     }
 
-    /// Alle Dateien sind durch: sichern, falls eingeschaltet, sonst Ende.
+    /// Alle Dateien sind durch: sichern, falls eingeschaltet.
     private func installsDone(_ session: Session) {
         guard session.backupEnabled, let profileId = session.profileId,
               let profile = deviceManager.profile(profileId), let tabId = session.tabId else {
-            endSession(session)
+            afterBackup(session)
             return
         }
         session.stage = .backingUp
@@ -902,6 +947,25 @@ final class AppState {
         let directory = deviceManager.backupDirectory(for: profile)
         tabLog(tabId, L10n.logBackupStarting(directory.path))
         session.runner.send("backup \(directory.path)")
+    }
+
+    /// Nach der Sicherung: das ROM auslesen, falls angefragt, sonst Ende.
+    private func afterBackup(_ session: Session) {
+        guard session.romRequested, let profileId = session.profileId,
+              let profile = deviceManager.profile(profileId), let tabId = session.tabId else {
+            endSession(session)
+            return
+        }
+        session.stage = .dumpingROM
+        romProgress(session)
+        let directory = deviceManager.romDirectory(for: profile)
+        tabLog(tabId, L10n.logROMRequested(directory.path))
+        session.runner.send("getrom \(directory.path)")
+    }
+
+    private func romProgress(_ session: Session) {
+        guard let tabId = session.tabId, let user = session.user else { return }
+        statuses[tabId]?.phase = .dumpingROM(user: user, done: session.romDone, total: session.romTotal)
     }
 
     private func backupProgress(_ session: Session, file: String?) {
@@ -1001,6 +1065,13 @@ final class AppState {
                     installed: session.restoreDone - session.restoreFailed,
                     failed: session.restoreFailed + (session.restoreFiles.count - session.restoreDone),
                     total: session.restoreFiles.count)
+            }
+            if session.romRequested {
+                var notReached = L10n.romNotReached
+                if case .signal(let signal) = exit, !session.stopRequested {
+                    notReached = L10n.sessionCrashed(Int(signal))
+                }
+                statuses[tabId]?.lastROMDump = session.romResult ?? .failed(message: notReached)
             }
             // auch eine abgebrochene Sicherung zeigt, was schon da ist
             if session.stage == .backingUp, session.backupTotal > 0 {

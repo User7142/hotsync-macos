@@ -18,6 +18,16 @@ final class TabStatus {
         /// nach den Installationen: die Datenbanken im RAM werden gesichert;
         /// `done` von `total` sind durch (geholt oder unverändert)
         case backingUp(user: PalmUser, file: String?, done: Int, total: Int)
+        /// zum Schluss: das ROM wird ausgelesen, `done` von `total` Bytes
+        case dumpingROM(user: PalmUser, done: Int, total: Int)
+    }
+
+    /// Ergebnis des ROM-Auslesens im letzten HotSync
+    enum ROMDump: Equatable {
+        case saved(file: String, bytes: Int)
+        /// Palm OS 5: geht über HotSync nicht
+        case unsupported(version: String)
+        case failed(message: String)
     }
 
     /// Ergebnis der Sicherung im letzten HotSync
@@ -58,6 +68,7 @@ final class TabStatus {
     var lastResult: Result?
     var lastBackup: Backup?
     var lastRestore: Restore?
+    var lastROMDump: ROMDump?
     let log = LiveLog(capacity: 200)
 
     var isBusy: Bool {
@@ -67,7 +78,7 @@ final class TabStatus {
 
     var isSyncing: Bool {
         switch phase {
-        case .restoring, .syncing, .backingUp: return true
+        case .restoring, .syncing, .backingUp, .dumpingROM: return true
         default: return false
         }
     }

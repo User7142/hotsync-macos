@@ -16,7 +16,7 @@ struct TabDetailView: View {
             header
             if let status = appState.status(tab.id) {
                 if status.isSyncing || status.lastResult != nil || status.lastBackup != nil
-                    || status.lastRestore != nil {
+                    || status.lastRestore != nil || status.lastROMDump != nil {
                     resultBox(status)
                 }
             }
@@ -68,6 +68,11 @@ struct TabDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.blue)
                 }
+                if appState.romRequests.contains(tab.profileId) {
+                    Label(L10n.romDumpPending, systemImage: "memorychip")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
             }
 
             Spacer()
@@ -109,6 +114,17 @@ struct TabDetailView: View {
                 }
                 Divider()
                 Button(L10n.backupOpenFolder) { openBackupFolder() }
+                Divider()
+                if appState.romRequests.contains(tab.profileId) {
+                    Button(L10n.romDumpCancel) { appState.requestROMDump(false, for: tab.profileId) }
+                } else if let os = palmOS, !os.canDumpROM {
+                    Text(L10n.romDumpUnsupported(os.description))
+                } else {
+                    Button(L10n.romDumpNext) { appState.requestROMDump(true, for: tab.profileId) }
+                }
+                if hasROM {
+                    Button(L10n.romOpenFolder) { openROMFolder() }
+                }
             } label: {
                 Label(L10n.backupMenu, systemImage: "externaldrive.badge.timemachine")
             }
@@ -156,6 +172,22 @@ struct TabDetailView: View {
         return L10n.backupSummary(backupCount, date)
     }
 
+    private var palmOS: PalmOSVersion? { appState.deviceManager.profile(tab.profileId)?.palmOS }
+
+    private var romDirectory: URL? {
+        appState.deviceManager.profile(tab.profileId).map { appState.deviceManager.romDirectory(for: $0) }
+    }
+
+    private var hasROM: Bool {
+        guard let dir = romDirectory, let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
+        else { return false }
+        return names.contains { $0.hasSuffix(".rom") }
+    }
+
+    private func openROMFolder() {
+        if let dir = romDirectory { NSWorkspace.shared.open(dir) }
+    }
+
     private func openBackupFolder() {
         guard let dir = backupDirectory else { return }
         if FileManager.default.fileExists(atPath: dir.path) {
@@ -168,7 +200,7 @@ struct TabDetailView: View {
 
     private var phaseColor: Color {
         switch phase {
-        case .restoring, .syncing, .backingUp: return .blue
+        case .restoring, .syncing, .backingUp, .dumpingROM: return .blue
         case .listening: return .green
         case .waitingForPort: return .orange
         case .idle: return .gray
@@ -180,6 +212,7 @@ struct TabDetailView: View {
         case .syncing: return "arrow.triangle.2.circlepath"
         case .restoring: return "arrow.counterclockwise.circle"
         case .backingUp: return "externaldrive.badge.timemachine"
+        case .dumpingROM: return "memorychip"
         case .listening: return "antenna.radiowaves.left.and.right"
         case .waitingForPort: return "hourglass"
         case .idle: return "power.circle"
@@ -195,6 +228,8 @@ struct TabDetailView: View {
             return L10n.phaseRestoring(user.name, done, total, file)
         case .backingUp(let user, let file, let done, let total):
             return L10n.phaseBackingUp(user.name, done, total, file)
+        case .dumpingROM(let user, let done, let total):
+            return L10n.phaseDumpingROM(user.name, done, total)
         case .listening:
             return appState.isStarted(tab.id) ? L10n.phaseListeningTargeted : L10n.phaseListeningAuto
         case .waitingForPort:
@@ -244,7 +279,8 @@ struct TabDetailView: View {
                         .padding(4)
                 }
             }
-        } else if status.lastResult != nil || status.lastBackup != nil || status.lastRestore != nil {
+        } else if status.lastResult != nil || status.lastBackup != nil || status.lastRestore != nil
+                    || status.lastROMDump != nil {
             GroupBox {
                 HStack(alignment: .top, spacing: 10) {
                     if let result = status.lastResult {
@@ -267,6 +303,17 @@ struct TabDetailView: View {
                             Text(L10n.resultRestore(restore.installed, restore.failed))
                                 .font(.callout)
                                 .foregroundStyle(restore.failed == 0 ? Color.primary : Color.orange)
+                        }
+                        if let dump = status.lastROMDump {
+                            HStack(spacing: 8) {
+                                Text(L10n.resultROM(dump))
+                                    .font(.callout)
+                                    .foregroundStyle({ if case .saved = dump { return Color.primary } else { return Color.orange } }())
+                                if case .saved = dump {
+                                    Button(L10n.showInFinder) { openROMFolder() }
+                                        .controlSize(.small)
+                                }
+                            }
                         }
                         if let backup = status.lastBackup {
                             HStack(spacing: 8) {
@@ -298,6 +345,7 @@ struct TabDetailView: View {
         case .syncing(_, _, let done, let total) where total > 0: return (done, total)
         case .restoring(_, _, let done, let total): return (done, total)
         case .backingUp(_, _, let done, let total): return (done, total)
+        case .dumpingROM(_, let done, let total): return (done, total)
         default: return nil
         }
     }

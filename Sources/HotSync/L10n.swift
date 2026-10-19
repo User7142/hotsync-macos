@@ -488,7 +488,57 @@ enum L10n {
         "Zurückgespielt: \(installed) Datenbanken, \(failed) nicht", "Restored: \(installed) databases, \(failed) not"
     ) }
 
+    static func logROMRequested(_ path: String) -> String { s("ROM wird ausgelesen nach \(path) …", "Reading the ROM to \(path) …") }
+    static func logROMStarting(_ version: String, _ total: Int, _ file: String) -> String { s(
+        "ROM von Palm OS \(version): \(megabytes(total)) → \(file)", "ROM of Palm OS \(version): \(megabytes(total)) → \(file)"
+    ) }
+    static func logROMFinished(_ file: String, _ bytes: Int) -> String { s(
+        "ROM ausgelesen: \(file) (\(megabytes(bytes)))", "ROM read: \(file) (\(megabytes(bytes)))"
+    ) }
+    static func logROMUnsupported(_ version: String) -> String { s(
+        "ROM nicht ausgelesen: Palm OS \(version) – über HotSync geht das nur bis Palm OS 4",
+        "ROM not read: Palm OS \(version) – over HotSync this only works up to Palm OS 4"
+    ) }
+    static func logROMFailed(_ message: String) -> String { s(
+        "ROM-Auslesen abgebrochen: \(message) – unvollständig nicht gespeichert",
+        "Reading the ROM stopped: \(message) – nothing incomplete saved"
+    ) }
+    static var romNotReached: String { s(
+        "die Sitzung endete vorher", "the session ended before"
+    ) }
+    static func megabytes(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .binary)
+    }
+    static func phaseDumpingROM(_ name: String, _ done: Int, _ total: Int) -> String {
+        total == 0
+            ? s("\(name): ROM wird vorbereitet …", "\(name): preparing the ROM …")
+            : s("\(name): ROM wird ausgelesen, \(megabytes(done)) von \(megabytes(total))",
+                "\(name): reading the ROM, \(megabytes(done)) of \(megabytes(total))")
+    }
+    static func resultROM(_ dump: TabStatus.ROMDump) -> String {
+        switch dump {
+        case .saved(let file, let bytes):
+            return s("ROM ausgelesen: \(file) (\(megabytes(bytes)))", "ROM read: \(file) (\(megabytes(bytes)))")
+        case .unsupported(let version):
+            return s("ROM nicht ausgelesen: Palm OS \(version) – geht über HotSync nur bis Palm OS 4",
+                     "ROM not read: Palm OS \(version) – over HotSync only up to Palm OS 4")
+        case .failed(let message):
+            return s("ROM nicht ausgelesen: \(message)", "ROM not read: \(message)")
+        }
+    }
+
     // MARK: - Sicherung (Menü)
+
+    static var romDumpNext: String { s("ROM beim nächsten HotSync auslesen", "Read the ROM at the next HotSync") }
+    static var romDumpCancel: String { s("ROM-Auslesen abbrechen", "Cancel reading the ROM") }
+    static func romDumpUnsupported(_ version: String) -> String { s(
+        "ROM auslesen geht nur bis Palm OS 4 (dieses Gerät: \(version))",
+        "Reading the ROM only works up to Palm OS 4 (this device: \(version))"
+    ) }
+    static var romOpenFolder: String { s("ROM im Finder zeigen", "Show the ROM in the Finder") }
+    static var romDumpPending: String { s(
+        "Beim nächsten HotSync wird das ROM ausgelesen", "The ROM is read at the next HotSync"
+    ) }
 
     static var backupMenu: String { s("Sicherung", "Backup") }
     static var backupMenuHelp: String { s("Sicherung dieses Palms: zurückspielen, im Finder zeigen", "This Palm's backup: restore, show in the Finder") }

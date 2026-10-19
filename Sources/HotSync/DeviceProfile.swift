@@ -1,4 +1,5 @@
 import Foundation
+import HotSyncCore
 
 struct DeviceProfile: Codable, Identifiable, Equatable {
     let id: UUID
@@ -9,6 +10,10 @@ struct DeviceProfile: Codable, Identifiable, Equatable {
     var deviceNote: String?
     /// Ende der letzten vollständigen Sicherung
     var lastBackupAt: Date?
+    /// Palm-OS-Version, wie der Palm sie beim letzten HotSync meldete
+    var romVersion: UInt32?
+
+    var palmOS: PalmOSVersion? { romVersion.map(PalmOSVersion.init(rom:)) }
 
     /// false, solange noch kein Palm diesem Profil zugeordnet ist (User-ID 0):
     /// Dann übernimmt der erste Palm ohne Benutzer, der in einem Tab dieses

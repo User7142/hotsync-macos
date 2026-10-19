@@ -250,7 +250,7 @@ private struct TabButton: View {
     private var dotColor: Color {
         guard let status = appState.status(tab.id) else { return .gray }
         switch status.phase {
-        case .restoring, .syncing, .backingUp: return .blue
+        case .restoring, .syncing, .backingUp, .dumpingROM: return .blue
         case .listening: return .green
         case .waitingForPort: return .orange
         case .idle:
