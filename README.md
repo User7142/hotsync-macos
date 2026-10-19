@@ -29,7 +29,9 @@ The licenses of the included pilot-link library (libpisock) and libusb are in
 - **Install queue** &ndash; `.prc`/`.pdb`/`.pqa` files via drag & drop, double-click in the Finder, or the install folder; the queue always shows the folder's content, whichever way a file got there
 - **Checked before the HotSync** &ndash; every file's Palm database header is read: database name, **version** (of an application: its `tver` resource), type/creator and size are shown, and files HotSync cannot install (wrong format, truncated, …) are marked red and never sent
 - **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
-- **New Palms are asked about** &ndash; a Palm HotSync does not know yet brings up a dialog while it waits in the cradle: add it as a new device with its own tab and queue, under its own name or a new one. A Palm without a user name (new or after a hard reset) gets its name there. Name and ID are written to that very Palm in the same HotSync, which then goes on to install its queue. A name that already belongs to a device (say, a Palm after a hard reset) offers to take that device over: the Palm gets its name and ID back, with its tab, queue and installed files
+- **Backups with every HotSync** &ndash; after the installs, the Palm's RAM databases (applications, data, settings) are fetched into `~/HotSync/<device>/Backup/`: all of them the first time, afterwards only the ones that changed, so later backups take seconds. A progress bar shows "12 of 257 databases". A backup cut short (cancel on the Palm, cable pulled) keeps the previous state of every database it did not get to. Per tab, **"HotSync: Install + Back Up"** or **"Install Only"** (say, for a slow serial tab), or set for all tabs at once
+- **Restore** &ndash; "Backup → Restore at the next HotSync" puts the whole backup back onto the Palm. For a Palm that lost its memory (empty batteries, a dead backup capacitor, a hard reset): put it into the cradle, press HotSync, choose **Take Over a Known Device** and the device in the dialog, keep "Restore the backup" ticked &ndash; one HotSync brings back its name and ID, applications, data and settings
+- **New Palms are asked about** &ndash; a Palm HotSync does not know yet brings up a dialog while it waits in the cradle: add it as a **new device** with its own tab and queue, under its own name or a new one, or **take over a known device** picked from a list (with its backup). Name and ID are written to that very Palm in the same HotSync, which then goes on to install its queue
 - **The window follows the HotSync** &ndash; when a Palm connects, the window switches to its tab
 - **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
 - **Move to another Palm** &ndash; drag queued files onto the tab of another device or use "Move to" in the context menu; select several with shift-click (range) and command-click, as in the Finder
@@ -63,6 +65,18 @@ The licenses of the included pilot-link library (libpisock) and libusb are in
 5. Files the Palm confirmed are moved to `~/HotSync/<device>/Installed/`; files that were not
    transferred (error, cancel on the Palm, connection lost) stay in `Install/` and are offered
    again on the next HotSync
+6. With "Install + Back Up", the backup follows: changed databases go to `~/HotSync/<device>/Backup/`
+
+### Backup and restore
+
+- The backup holds the latest state of every database in the Palm's RAM, one `.prc`/`.pdb` per
+  database. A database deleted on the Palm stays in the backup. Databases in ROM are not backed
+  up; a few that pilot-xfer also leaves out are skipped (`Unsaved Preferences`, PACE caches, and
+  some that reset Palm OS 5 devices when read).
+- **Restore** goes before the queue in the same HotSync, data before the applications that use
+  it. `Net Prefs` cannot be replaced during a HotSync (the Palm keeps it open for the connection)
+  &ndash; the Palm keeps its own. The Palm may ask for a soft reset afterwards.
+- Deleting a device moves its folder, with its backup, to the Trash.
 
 ### Tabs, ports and chains
 
@@ -87,7 +101,8 @@ user ID; when such a Palm connects, assign it once.
 ~/HotSync/
 └── <device>/
     ├── Install/      ← put .prc/.pdb files here
-    └── Installed/    ← moved here after the sync
+    ├── Installed/    ← moved here after the sync
+    └── Backup/       ← the Palm's databases, updated with every HotSync
 ```
 
 ## Building
@@ -161,8 +176,9 @@ This is a hobby project that does its job for me, but it has rough edges:
 - **One Palm per port at a time.** pilot-link takes the first Palm it finds on any USB bus and
   cannot address a particular one, so two USB Palms cannot sync at the same time. Use a chain to
   sync them one after another; USB and serial ports do run at the same time.
-- **No real two-way sync.** The app only installs files. Addresses, dates and memos are not
-  synced like with the original Palm Desktop, and the "Backups" folder is not used yet.
+- **No real two-way sync.** The app installs files and backs up and restores whole databases.
+  Addresses, dates and memos are not synced with macOS Contacts or Calendar like with the
+  original Palm Desktop.
 - The Palm only appears on the USB bus while a HotSync is running, so a USB cradle itself is
   invisible: for USB, the app can only show which Palm reported last, not when the cradle was
   plugged in.
