@@ -19,10 +19,8 @@
  *             install <Pfad>   Datei installieren
  *             setuser <ID> <Name>  Palm ohne Benutzer übernimmt ein Profil
  *             log <Text>       Eintrag ins HotSync-Log des Palms
- *             backup <ram|rom|all> <Ordner>
- *                              Datenbanken vom Palm holen: die aus dem RAM
- *                              nach <Ordner>/RAM, die aus dem ROM nach
- *                              <Ordner>/ROM (je eine .prc/.pdb)
+ *             backup <Ordner>  die Datenbanken im RAM nach <Ordner> sichern
+ *                              (nur die seit der letzten Sicherung geänderten)
  *             end              Sitzung sauber beenden
  *
  * Exit:     0 Sitzung beendet, 1 Fehler, 2 kein Palm innerhalb des Timeouts
@@ -36,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <utime.h>
 #include <unistd.h>
 
 #include "pi-dlp.h"
@@ -283,112 +282,177 @@ static void file_name_for(char *out, size_t size, const struct DBInfo *info)
 	strncat(out, (info->flags & dlpDBFlagResource) ? ".prc" : ".pdb", size - strlen(out) - 1);
 }
 
-/* Holt alle Datenbanken einer Liste (RAM oder ROM) nach dir. Meldet jede
- * Datenbank ("backingUp", dann "backedUp" oder "backupFailed"); zählt mit. */
-static int backup_list(int sd, int rom, const char *dir, int *saved, int *failed)
+/* Datenbanken, die nicht in eine Sicherung gehören - dieselben wie bei
+ * pilot-xfer: Datenbanken dieser Creator setzen manche Palm OS 5-Geräte beim
+ * Lesen zurück oder sind nur Caches (PACE), "Unsaved Preferences" ist ein
+ * Arbeitsstand des Systems. */
+#define FOURCC(a, b, c, d) \
+	(((unsigned long)(a) << 24) | ((unsigned long)(b) << 16) | ((unsigned long)(c) << 8) | (unsigned long)(d))
+
+static int skip_in_backup(const struct DBInfo *info)
 {
-	pi_buffer_t *buffer = pi_buffer_new(sizeof(struct DBInfo));
-	int index = 0;
+	static const unsigned long creators[] = {
+		FOURCC('p', 'p', 'p', '_'), FOURCC('u', '8', 'E', 'Z'),
+		FOURCC('P', 'M', 'H', 'a'), FOURCC('P', 'M', 'N', 'e'),	/* Phone Link Update */
+		FOURCC('F', 'n', 't', '1'),					/* Hires-Fonts */
+		FOURCC('m', 'o', 'd', 'm'), FOURCC('a', '6', '8', 'k')		/* PACE-Cache */
+	};
+	size_t i;
 
-	if (buffer == NULL)
-		return -1;
-	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
-		emit_error("backup", "cannot create %s (%s)", dir, strerror(errno));
-		pi_buffer_free(buffer);
-		return -1;
-	}
-
-	for (;;) {
-		struct DBInfo info;
-		char name[256], path[PATH_MAX];
-		struct stat sbuf;
-		pi_file_t *pf;
-
-		if (!pi_socket_connected(sd)) {
-			emit_error("backup", "the Palm does not answer any more");
-			pi_buffer_free(buffer);
-			return -1;
-		}
-		/* Ende der Liste: der Palm meldet "nicht gefunden" */
-		if (dlp_ReadDBList(sd, 0, rom ? dlpDBListROM : dlpDBListRAM, index, buffer) < 0)
-			break;
-		memcpy(&info, buffer->data, sizeof(struct DBInfo));
-		index = info.index + 1;
-
-		file_name_for(name, sizeof(name), &info);
-		snprintf(path, sizeof(path), "%s/%s", dir, name);
-
-		emit_begin("backingUp");
-		emit_str("file", name, 0);
-		emit_str("list", rom ? "rom" : "ram", 0);
-		emit_end();
-
-		/* geöffnet und schreibgeschützt gehören nicht in die Datei */
-		info.flags &= ~(dlpDBFlagOpen | dlpDBFlagReadOnly);
-		pf = pi_file_create(path, &info);
-		if (pf == NULL) {
-			emit_begin("backupFailed");
-			emit_str("file", name, 0);
-			emit_str("reason", "unwritableFile", 0);
-			emit_end();
-			(*failed)++;
-			continue;
-		}
-		if (pi_file_retrieve(pf, sd, 0, install_progress) < 0) {
-			emit_begin("backupFailed");
-			emit_str("file", name, 0);
-			emit_str("reason", "palmError", 0);
-			emit_int("error", pi_error(sd));
-			emit_int("palmOSError", pi_palmos_error(sd));
-			emit_end();
-			pi_file_close(pf);
-			unlink(path);
-			(*failed)++;
-			continue;
-		}
-		pi_file_close(pf);	/* schreibt die Datei */
-		emit_begin("backedUp");
-		emit_str("file", name, 0);
-		emit_int("bytes", stat(path, &sbuf) == 0 ? (long)sbuf.st_size : 0);
-		emit_end();
-		(*saved)++;
-	}
-	pi_buffer_free(buffer);
-	return 0;
+	for (i = 0; i < sizeof(creators) / sizeof(creators[0]); i++)
+		if (info->creator == creators[i])
+			return 1;
+	return strcmp(info->name, "Unsaved Preferences") == 0;
 }
 
-/* "backup <ram|rom|all> <Ordner>": Datenbanken vom Palm holen. */
-static void backup(int sd, const char *args)
+static void emit_backup_failed(const char *name, const char *reason, int sd)
 {
-	const char *space = strchr(args, ' ');
-	char dir[PATH_MAX];
-	int ram, rom, saved = 0, failed = 0;
-	size_t scope = space ? (size_t)(space - args) : 0;
+	emit_begin("backupFailed");
+	emit_str("file", name, 0);
+	emit_str("reason", reason, 0);
+	if (sd >= 0) {
+		emit_int("error", pi_error(sd));
+		emit_int("palmOSError", pi_palmos_error(sd));
+	}
+	emit_end();
+}
 
-	ram = (scope == 3 && strncmp(args, "ram", 3) == 0) || (scope == 3 && strncmp(args, "all", 3) == 0);
-	rom = (scope == 3 && strncmp(args, "rom", 3) == 0) || (scope == 3 && strncmp(args, "all", 3) == 0);
-	if (!space || !space[1] || (!ram && !rom)) {
-		emit_error("backup", "usage: backup <ram|rom|all> <directory>");
+/* "backup <Ordner>": die Datenbanken im RAM nach <Ordner> sichern, eine
+ * .prc/.pdb je Datenbank. Seit der letzten Sicherung unverändert (das
+ * Änderungsdatum auf dem Palm ist das Dateidatum, wie bei pilot-xfer -u):
+ * übersprungen. Geschrieben wird über <Datei>.part, damit ein abgebrochener
+ * HotSync die vorige Sicherung einer Datenbank nicht zerstört.
+ * Ereignisse: backupStarted (mit Gesamtzahl), je Datenbank backingUp und
+ * backedUp / backupUnchanged / backupFailed, am Ende backupFinished. */
+static void backup(int sd, const char *dir)
+{
+	struct DBInfo *list = NULL;
+	int count = 0, capacity = 0, index = 0, i;
+	int saved = 0, unchanged = 0, failed = 0;
+	pi_buffer_t *buffer;
+
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+		emit_error("backup", "cannot create %s (%s)", dir, strerror(errno));
 		return;
 	}
-	if (mkdir(space + 1, 0755) != 0 && errno != EEXIST) {
-		emit_error("backup", "cannot create %s (%s)", space + 1, strerror(errno));
+	buffer = pi_buffer_new(sizeof(struct DBInfo));
+	if (buffer == NULL) {
+		emit_error("backup", "out of memory");
+		return;
+	}
+
+	/* erst die ganze Liste: die Gesamtzahl für den Fortschritt. Ihr Ende
+	 * meldet der Palm als "nicht gefunden". */
+	while (dlp_ReadDBList(sd, 0, dlpDBListRAM, index, buffer) >= 0) {
+		struct DBInfo info;
+
+		memcpy(&info, buffer->data, sizeof(struct DBInfo));
+		index = info.index + 1;
+		if (skip_in_backup(&info))
+			continue;
+		if (count == capacity) {
+			struct DBInfo *grown;
+
+			capacity = capacity ? capacity * 2 : 64;
+			grown = realloc(list, capacity * sizeof(struct DBInfo));
+			if (grown == NULL) {
+				emit_error("backup", "out of memory");
+				free(list);
+				pi_buffer_free(buffer);
+				return;
+			}
+			list = grown;
+		}
+		list[count++] = info;
+	}
+	pi_buffer_free(buffer);
+	if (!pi_socket_connected(sd)) {
+		emit_error("backup", "the Palm does not answer any more");
+		free(list);
 		return;
 	}
 
 	emit_begin("backupStarted");
-	emit_str("directory", space + 1, 0);
+	emit_str("directory", dir, 0);
+	emit_int("total", count);
 	emit_end();
 
-	snprintf(dir, sizeof(dir), "%s/RAM", space + 1);
-	if (ram)
-		backup_list(sd, 0, dir, &saved, &failed);
-	snprintf(dir, sizeof(dir), "%s/ROM", space + 1);
-	if (rom && pi_socket_connected(sd))
-		backup_list(sd, 1, dir, &saved, &failed);
+	for (i = 0; i < count; i++) {
+		struct DBInfo info = list[i];
+		char name[256], path[PATH_MAX], part[PATH_MAX + 8];
+		struct stat sbuf;
+		struct utimbuf times;
+		pi_file_t *pf;
+
+		/* "Abbrechen" auf dem Palm beendet die Sicherung */
+		if (!pi_socket_connected(sd) || dlp_OpenConduit(sd) < 0) {
+			emit_error("backup", "cancelled on the Palm or connection lost");
+			break;
+		}
+
+		file_name_for(name, sizeof(name), &info);
+		snprintf(path, sizeof(path), "%s/%s", dir, name);
+
+		if (stat(path, &sbuf) == 0 && sbuf.st_mtime == info.modifyDate) {
+			emit_begin("backupUnchanged");
+			emit_str("file", name, 0);
+			emit_int("index", i + 1);
+			emit_end();
+			unchanged++;
+			continue;
+		}
+
+		emit_begin("backingUp");
+		emit_str("file", name, 0);
+		emit_int("index", i + 1);
+		emit_int("total", count);
+		emit_end();
+
+		/* geöffnet und schreibgeschützt gehören nicht in die Datei */
+		info.flags &= ~(dlpDBFlagOpen | dlpDBFlagReadOnly);
+		snprintf(part, sizeof(part), "%s.part", path);
+		pf = pi_file_create(part, &info);
+		if (pf == NULL) {
+			emit_backup_failed(name, "unwritableFile", -1);
+			failed++;
+			continue;
+		}
+		if (pi_file_retrieve(pf, sd, 0, install_progress) < 0) {
+			emit_backup_failed(name, "palmError", sd);
+			pi_file_close(pf);
+			unlink(part);
+			failed++;
+			continue;
+		}
+		if (pi_file_close(pf) < 0) {	/* schreibt die Datei */
+			emit_backup_failed(name, "unwritableFile", -1);
+			unlink(part);
+			failed++;
+			continue;
+		}
+		/* Dateidatum = Änderungsdatum auf dem Palm: so erkennt die nächste
+		 * Sicherung, dass sich nichts geändert hat */
+		times.actime = info.createDate;
+		times.modtime = info.modifyDate;
+		utime(part, &times);
+		if (rename(part, path) != 0) {
+			emit_backup_failed(name, "unwritableFile", -1);
+			unlink(part);
+			failed++;
+			continue;
+		}
+
+		emit_begin("backedUp");
+		emit_str("file", name, 0);
+		emit_int("bytes", stat(path, &sbuf) == 0 ? (long)sbuf.st_size : 0);
+		emit_end();
+		saved++;
+	}
+	free(list);
 
 	emit_begin("backupFinished");
 	emit_int("saved", saved);
+	emit_int("unchanged", unchanged);
 	emit_int("failed", failed);
 	emit_end();
 }
