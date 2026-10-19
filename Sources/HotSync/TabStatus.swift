@@ -12,25 +12,29 @@ final class TabStatus {
         /// Start gedrückt (oder Kettenschritt), der Anschluss ist noch belegt
         case waitingForPort
         case listening(since: Date)
+        /// vor den Installationen: die Sicherung geht auf den Palm zurück
+        case restoring(user: PalmUser, file: String?, done: Int, total: Int)
         case syncing(user: PalmUser, file: String?, done: Int, total: Int)
-        /// nach den Installationen: Datenbanken werden vom Palm geholt
-        case backingUp(user: PalmUser, file: String?, saved: Int)
+        /// nach den Installationen: die Datenbanken im RAM werden gesichert;
+        /// `done` von `total` sind durch (geholt oder unverändert)
+        case backingUp(user: PalmUser, file: String?, done: Int, total: Int)
     }
 
-    /// Was beim nächsten HotSync gesichert wird (Datenbanken vom Palm holen)
-    enum BackupScope: String, CaseIterable {
-        /// die Datenbanken im RAM: Programme und Daten des Benutzers
-        case ram
-        /// die Datenbanken im ROM: Betriebssystem, Treiber, Sony-Programme
-        case rom
-        case all
-    }
-
-    /// Ergebnis der letzten Sicherung
+    /// Ergebnis der Sicherung im letzten HotSync
     struct Backup: Equatable {
+        /// neu oder geändert geholt
         let saved: Int
+        let unchanged: Int
         let failed: Int
-        let directory: URL
+        /// alle Datenbanken durch (nicht abgebrochen)
+        let complete: Bool
+    }
+
+    /// Ergebnis des Zurückspielens im letzten HotSync
+    struct Restore: Equatable {
+        let installed: Int
+        let failed: Int
+        let total: Int
     }
 
     enum Result: Equatable {
@@ -53,6 +57,7 @@ final class TabStatus {
     var phase: Phase = .idle
     var lastResult: Result?
     var lastBackup: Backup?
+    var lastRestore: Restore?
     let log = LiveLog(capacity: 200)
 
     var isBusy: Bool {
@@ -62,7 +67,7 @@ final class TabStatus {
 
     var isSyncing: Bool {
         switch phase {
-        case .syncing, .backingUp: return true
+        case .restoring, .syncing, .backingUp: return true
         default: return false
         }
     }

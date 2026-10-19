@@ -9,11 +9,14 @@ struct TabDetailView: View {
     let tab: SyncTab
     let onEdit: () -> Void
 
+    @State private var confirmRestore = false
+
     var body: some View {
         VStack(spacing: 12) {
             header
             if let status = appState.status(tab.id) {
-                if status.isSyncing || status.lastResult != nil || status.lastBackup != nil {
+                if status.isSyncing || status.lastResult != nil || status.lastBackup != nil
+                    || status.lastRestore != nil {
                     resultBox(status)
                 }
             }
@@ -30,6 +33,12 @@ struct TabDetailView: View {
         }
         .padding()
         .frame(maxHeight: .infinity, alignment: .top)
+        .alert(L10n.restoreConfirmTitle, isPresented: $confirmRestore) {
+            Button(L10n.cancel, role: .cancel) {}
+            Button(L10n.restoreConfirm) { appState.requestRestore(true, for: tab.profileId) }
+        } message: {
+            Text(L10n.restoreConfirmMessage(appState.profileName(tab.profileId), backupSummary))
+        }
     }
 
     // MARK: - Kopf
@@ -54,8 +63,8 @@ struct TabDetailView: View {
                 Text(portText)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-                if let scope = appState.backupRequests[tab.profileId] {
-                    Label(L10n.backupPending(scope), systemImage: "externaldrive.badge.timemachine")
+                if appState.restoreRequests.contains(tab.profileId) {
+                    Label(L10n.backupRestorePending, systemImage: "arrow.counterclockwise.circle")
                         .font(.caption)
                         .foregroundStyle(.blue)
                 }
@@ -63,22 +72,47 @@ struct TabDetailView: View {
 
             Spacer()
 
-            Menu {
-                ForEach(TabStatus.BackupScope.allCases, id: \.self) { scope in
-                    Button(L10n.backupMenuItem(scope)) {
-                        appState.requestBackup(scope, for: tab.profileId)
+            HStack(spacing: 4) {
+                Text(L10n.tabSyncModeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Menu {
+                    Picker("", selection: Binding(
+                        get: { tab.isFullSync },
+                        set: { appState.setFullSync($0, for: tab.id) }
+                    )) {
+                        Text(L10n.tabSyncModeFullShort).tag(true)
+                        Text(L10n.tabSyncModeInstallShort).tag(false)
                     }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    if appState.tabStore.tabs.count > 1 {
+                        Divider()
+                        Button(L10n.allTabsSyncMode(full: true)) { appState.setFullSyncForAllTabs(true) }
+                        Button(L10n.allTabsSyncMode(full: false)) { appState.setFullSyncForAllTabs(false) }
+                    }
+                } label: {
+                    Text(tab.isFullSync ? L10n.tabSyncModeFullShort : L10n.tabSyncModeInstallShort)
                 }
-                if appState.backupRequests[tab.profileId] != nil {
-                    Divider()
-                    Button(L10n.backupCancel) { appState.requestBackup(nil, for: tab.profileId) }
+                .menuStyle(.button)
+                .fixedSize()
+            }
+            .help(L10n.tabSyncModeHint)
+
+            Menu {
+                Text(backupSummary)
+                if appState.restoreRequests.contains(tab.profileId) {
+                    Button(L10n.backupRestoreCancel) { appState.requestRestore(false, for: tab.profileId) }
+                } else {
+                    Button(L10n.backupRestoreNext) { confirmRestore = true }
+                        .disabled(backupCount == 0)
                 }
                 Divider()
-                Button(L10n.backupOpenFolder) { openBackupsFolder() }
+                Button(L10n.backupOpenFolder) { openBackupFolder() }
             } label: {
-                Image(systemName: "externaldrive.badge.timemachine")
+                Label(L10n.backupMenu, systemImage: "externaldrive.badge.timemachine")
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
             .fixedSize()
             .help(L10n.backupMenuHelp)
 
@@ -93,14 +127,12 @@ struct TabDetailView: View {
                 } label: {
                     Label(L10n.tabStop, systemImage: "stop.circle")
                 }
-                .controlSize(.large)
             } else {
                 Button {
                     appState.startTab(tab.id)
                 } label: {
                     Label(L10n.tabSyncNow, systemImage: "arrow.triangle.2.circlepath")
                 }
-                .controlSize(.large)
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!appState.portMonitor.isConnected(tab.port))
                 .help(L10n.tabSyncNowHelp)
@@ -112,16 +144,31 @@ struct TabDetailView: View {
         appState.status(tab.id)?.phase ?? .idle
     }
 
-    private func openBackupsFolder() {
-        guard let profile = appState.deviceManager.profile(tab.profileId) else { return }
-        let dir = appState.deviceManager.backupsDirectory(for: profile)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(dir)
+    private var backupDirectory: URL? {
+        appState.deviceManager.profile(tab.profileId).map { appState.deviceManager.backupDirectory(for: $0) }
+    }
+
+    private var backupCount: Int { appState.backupCount(for: tab.profileId) }
+
+    private var backupSummary: String {
+        let date = appState.deviceManager.profile(tab.profileId)?.lastBackupAt
+            .map { $0.formatted(date: .abbreviated, time: .shortened) }
+        return L10n.backupSummary(backupCount, date)
+    }
+
+    private func openBackupFolder() {
+        guard let dir = backupDirectory else { return }
+        if FileManager.default.fileExists(atPath: dir.path) {
+            NSWorkspace.shared.open(dir)
+        } else {
+            // noch keine Sicherung: der Geräteordner, in dem sie entstehen wird
+            NSWorkspace.shared.open(dir.deletingLastPathComponent())
+        }
     }
 
     private var phaseColor: Color {
         switch phase {
-        case .syncing, .backingUp: return .blue
+        case .restoring, .syncing, .backingUp: return .blue
         case .listening: return .green
         case .waitingForPort: return .orange
         case .idle: return .gray
@@ -131,6 +178,7 @@ struct TabDetailView: View {
     private var phaseIcon: String {
         switch phase {
         case .syncing: return "arrow.triangle.2.circlepath"
+        case .restoring: return "arrow.counterclockwise.circle"
         case .backingUp: return "externaldrive.badge.timemachine"
         case .listening: return "antenna.radiowaves.left.and.right"
         case .waitingForPort: return "hourglass"
@@ -143,8 +191,10 @@ struct TabDetailView: View {
         case .syncing(let user, let file, let done, let total):
             if total == 0 { return L10n.phaseSyncingNothing(user.name) }
             return L10n.phaseSyncing(user.name, done, total, file)
-        case .backingUp(let user, let file, let saved):
-            return L10n.phaseBackingUp(user.name, saved, file)
+        case .restoring(let user, let file, let done, let total):
+            return L10n.phaseRestoring(user.name, done, total, file)
+        case .backingUp(let user, let file, let done, let total):
+            return L10n.phaseBackingUp(user.name, done, total, file)
         case .listening:
             return appState.isStarted(tab.id) ? L10n.phaseListeningTargeted : L10n.phaseListeningAuto
         case .waitingForPort:
@@ -180,20 +230,21 @@ struct TabDetailView: View {
 
     @ViewBuilder
     private func resultBox(_ status: TabStatus) -> some View {
-        if case .syncing(_, _, let done, let total) = status.phase, total > 0 {
+        if let (done, total) = progress(status.phase) {
             GroupBox {
-                ProgressView(value: Double(done), total: Double(total))
-                    .tint(.blue)
-                    .padding(4)
+                if total > 0 {
+                    ProgressView(value: Double(done), total: Double(total))
+                        .tint(.blue)
+                        .padding(4)
+                } else {
+                    // Sicherung: die Liste der Datenbanken wird noch gelesen
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(.blue)
+                        .padding(4)
+                }
             }
-        } else if case .backingUp = status.phase {
-            GroupBox {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .tint(.blue)
-                    .padding(4)
-            }
-        } else if status.lastResult != nil || status.lastBackup != nil {
+        } else if status.lastResult != nil || status.lastBackup != nil || status.lastRestore != nil {
             GroupBox {
                 HStack(alignment: .top, spacing: 10) {
                     if let result = status.lastResult {
@@ -212,14 +263,19 @@ struct TabDetailView: View {
                                 rejectionActions(rejection)
                             }
                         }
+                        if let restore = status.lastRestore {
+                            Text(L10n.resultRestore(restore.installed, restore.failed))
+                                .font(.callout)
+                                .foregroundStyle(restore.failed == 0 ? Color.primary : Color.orange)
+                        }
                         if let backup = status.lastBackup {
                             HStack(spacing: 8) {
-                                Text(L10n.resultBackup(backup.saved, backup.failed))
+                                Text(L10n.resultBackup(backup.saved, backup.unchanged, backup.failed,
+                                                       complete: backup.complete))
                                     .font(.callout)
-                                Button(L10n.showInFinder) {
-                                    NSWorkspace.shared.activateFileViewerSelecting([backup.directory])
-                                }
-                                .controlSize(.small)
+                                    .foregroundStyle(backup.complete && backup.failed == 0 ? Color.primary : Color.orange)
+                                Button(L10n.showInFinder) { openBackupFolder() }
+                                    .controlSize(.small)
                             }
                         }
                     }
@@ -233,6 +289,16 @@ struct TabDetailView: View {
                 }
                 .padding(4)
             }
+        }
+    }
+
+    /// Fortschritt einer laufenden Stufe: erledigt, gesamt
+    private func progress(_ phase: TabStatus.Phase) -> (Int, Int)? {
+        switch phase {
+        case .syncing(_, _, let done, let total) where total > 0: return (done, total)
+        case .restoring(_, _, let done, let total): return (done, total)
+        case .backingUp(_, _, let done, let total): return (done, total)
+        default: return nil
         }
     }
 

@@ -123,6 +123,19 @@ enum L10n {
         }
     }
 
+    /// Beim Zurückspielen ist eine geschützte oder geöffnete Datenbank fast
+    /// immer eine, die der Palm während des HotSyncs selbst offen hält (Net
+    /// Prefs) - nicht eine Erweiterung, die man ausschalten könnte.
+    static func restoreFailureText(_ failure: InstallFailure) -> String {
+        switch failure {
+        case .protectedOnPalm, .openOnPalm:
+            return s("vom Palm während des HotSyncs selbst benutzt – lässt sich dabei nicht ersetzen",
+                     "in use by the Palm itself during the HotSync – cannot be replaced then")
+        default:
+            return failureText(failure)
+        }
+    }
+
     static func failureText(_ failure: InstallFailure) -> String {
         switch failure {
         case .protectedOnPalm:
@@ -168,6 +181,13 @@ enum L10n {
     static var tabPort: String { s("Anschluss", "Port") }
     static func tabPortMissing(_ name: String) -> String { s("\(name) (nicht verbunden)", "\(name) (not connected)") }
     static var tabBaudRate: String { s("Baudrate", "Baud rate") }
+    static var tabSyncMode: String { s("HotSync", "HotSync") }
+    static var tabSyncModeFull: String { s("Installieren + Sichern", "Install + Back Up") }
+    static var tabSyncModeInstall: String { s("Nur installieren", "Install Only") }
+    static var tabSyncModeHint: String { s(
+        "„Installieren + Sichern“ holt nach den Installationen die Datenbanken im RAM des Palms auf den Mac – beim ersten Mal alle, danach nur die geänderten. Für einen langsamen seriellen Tab kann „Nur installieren“ sinnvoll sein.",
+        "“Install + Back Up” fetches the Palm's RAM databases to the Mac after the installs – all of them the first time, then only the changed ones. For a slow serial tab, “Install Only” can make sense."
+    ) }
     static var tabAutoListen: String { s("Automatisch lauschen", "Listen automatically") }
     static var tabAutoListenHint: String { s(
         "Der Anschluss wartet ständig auf einen Palm und gibt ihn dem Tab, zu dem er gehört. Ohne: nur per „Jetzt syncen“ oder als Schritt einer Kette.",
@@ -201,10 +221,17 @@ enum L10n {
         let current = file.map { " – \($0)" } ?? ""
         return s("\(name): \(done) von \(total) Datei(en)\(current)", "\(name): \(done) of \(total) file(s)\(current)")
     }
-    static func phaseBackingUp(_ name: String, _ saved: Int, _ file: String?) -> String {
+    static func phaseBackingUp(_ name: String, _ done: Int, _ total: Int, _ file: String?) -> String {
         let current = file.map { " – \($0)" } ?? ""
-        return s("\(name): Sicherung, \(saved) Datenbank(en) geholt\(current)",
-                 "\(name): backup, \(saved) database(s) fetched\(current)")
+        return total == 0
+            ? s("\(name): Sicherung wird vorbereitet …", "\(name): preparing the backup …")
+            : s("\(name): Sicherung, \(done) von \(total) Datenbanken\(current)",
+                "\(name): backup, \(done) of \(total) databases\(current)")
+    }
+    static func phaseRestoring(_ name: String, _ done: Int, _ total: Int, _ file: String?) -> String {
+        let current = file.map { " – \($0)" } ?? ""
+        return s("\(name): Sicherung wird zurückgespielt, \(done) von \(total)\(current)",
+                 "\(name): restoring the backup, \(done) of \(total)\(current)")
     }
     static func phaseSyncingNothing(_ name: String) -> String { s(
         "\(name) verbunden – nichts zu installieren", "\(name) connected – nothing to install"
@@ -227,11 +254,17 @@ enum L10n {
             : s("\(time): \(installed) installiert, \(failed) nicht – siehe Warteschlange",
                 "\(time): \(installed) installed, \(failed) not – see the queue")
     }
-    static func resultBackup(_ saved: Int, _ failed: Int) -> String {
+    static func resultBackup(_ saved: Int, _ unchanged: Int, _ failed: Int, complete: Bool) -> String {
+        let head = complete ? s("Gesichert", "Backed up") : s("Sicherung abgebrochen", "Backup cut short")
+        let failedPart = failed == 0 ? "" : s(", \(failed) nicht lesbar – siehe Log", ", \(failed) unreadable – see the log")
+        return s("\(head): \(saved) neu oder geändert, \(unchanged) unverändert\(failedPart)",
+                 "\(head): \(saved) new or changed, \(unchanged) unchanged\(failedPart)")
+    }
+    static func resultRestore(_ installed: Int, _ failed: Int) -> String {
         failed == 0
-            ? s("Gesichert: \(saved) Datenbank(en)", "Backed up: \(saved) database(s)")
-            : s("Gesichert: \(saved) Datenbank(en), \(failed) nicht lesbar – siehe Log",
-                "Backed up: \(saved) database(s), \(failed) unreadable – see the log")
+            ? s("Sicherung zurückgespielt: \(installed) Datenbanken", "Backup restored: \(installed) databases")
+            : s("Sicherung zurückgespielt: \(installed) Datenbanken, \(failed) nicht – siehe Log",
+                "Backup restored: \(installed) databases, \(failed) not – see the log")
     }
     static var showInFinder: String { s("Im Finder zeigen", "Show in Finder") }
     static func resultTimedOut(_ time: String) -> String { s(
@@ -292,9 +325,16 @@ enum L10n {
         "The Palm waits for your answer here – its queue is installed right after."
     ) }
     static func newPalmExisting(_ name: String) -> String { s(
-        "Es gibt schon ein Gerät „\(name)“. Ist das dieser Palm, z. B. nach einem Hard Reset? Für ein neues Gerät einen anderen Namen wählen.",
-        "There is already a device “\(name)”. Is it this Palm, e.g. after a hard reset? For a new device, choose another name."
+        "Es gibt schon ein Gerät „\(name)“ – für ein neues Gerät einen anderen Namen wählen.",
+        "There is already a device “\(name)” – choose another name for a new device."
     ) }
+    static var newPalmModeNew: String { s("Neues Gerät", "New Device") }
+    static var newPalmModeExisting: String { s("Bekanntes Gerät übernehmen", "Take Over a Known Device") }
+    static var newPalmDevice: String { s("Gerät:", "Device:") }
+    static func newPalmDeviceWithBackup(_ name: String, _ count: Int) -> String { s(
+        "\(name) – Sicherung mit \(count) Datenbanken", "\(name) – backup with \(count) databases"
+    ) }
+    static var newPalmSwitchToTakeOver: String { s("Übernehmen …", "Take Over …") }
     static func newPalmTakeOver(_ name: String) -> String { s("„\(name)“ übernehmen", "Take Over “\(name)”") }
     static var newPalmTakeOverHint: String { s(
         "Der Palm bekommt Name und ID des Geräts zurück – mit Tab, Warteschlange und Installiertem. Er wartet, bis du hier antwortest.",
@@ -378,8 +418,8 @@ enum L10n {
     static var profileUnbound: String { s("noch keinem Palm zugeordnet", "no Palm assigned yet") }
     static var deleteDevice: String { s("Gerät löschen?", "Delete Device?") }
     static func deleteMessage(_ name: String) -> String { s(
-        "Das Profil \"\(name)\", seine Tabs und alle zugehörigen Dateien werden gelöscht.",
-        "The profile \"\(name)\", its tabs and all associated files will be deleted."
+        "Das Profil \"\(name)\" und seine Tabs werden gelöscht. Sein Ordner – mit Warteschlange, Installiertem und Sicherung – kommt in den Papierkorb.",
+        "The profile \"\(name)\" and its tabs will be deleted. Its folder – with the queue, installed files and backup – goes to the Trash."
     ) }
 
     // MARK: - Mitteilungen, Menüleiste
@@ -420,8 +460,8 @@ enum L10n {
     static func logAdopting(_ name: String) -> String { s(
         "Palm ohne Benutzer übernimmt das Profil „\(name)“", "Palm without a user takes the profile “\(name)”"
     ) }
-    static func logBackupStarting(_ scope: TabStatus.BackupScope, _ path: String) -> String { s(
-        "Sicherung (\(backupScopeName(scope))) nach \(path) …", "Backup (\(backupScopeName(scope))) to \(path) …"
+    static func logBackupStarting(_ path: String) -> String { s(
+        "Sicherung nach \(path) …", "Backup to \(path) …"
     ) }
     static func logBackedUp(_ name: String, _ bytes: Int) -> String { s(
         "\(name) gesichert (\(bytes) Bytes)", "\(name) backed up (\(bytes) bytes)"
@@ -430,39 +470,55 @@ enum L10n {
         "\(name) NICHT gesichert (Palm-OS-Fehler \(palmOSError))",
         "\(name) NOT backed up (Palm OS error \(palmOSError))"
     ) }
-    static func logBackupFinished(_ saved: Int, _ failed: Int) -> String { s(
-        "Sicherung fertig: \(saved) gesichert, \(failed) nicht", "Backup done: \(saved) backed up, \(failed) not"
+    static func logBackupFinished(_ saved: Int, _ unchanged: Int, _ failed: Int) -> String { s(
+        "Sicherung fertig: \(saved) neu oder geändert, \(unchanged) unverändert, \(failed) nicht lesbar",
+        "Backup done: \(saved) new or changed, \(unchanged) unchanged, \(failed) unreadable"
     ) }
     static var logBackupIncomplete: String { s(
-        "Sicherung abgebrochen – die bis dahin geholten Datenbanken liegen im Ordner",
-        "Backup cut short – the databases fetched so far are in the folder"
+        "Sicherung abgebrochen – die bis dahin geholten Datenbanken sind gesichert, die übrigen haben ihren alten Stand",
+        "Backup cut short – the databases fetched so far are saved, the others keep their previous state"
     ) }
-    static func backupScopeName(_ scope: TabStatus.BackupScope) -> String {
-        switch scope {
-        case .ram: return s("RAM", "RAM")
-        case .rom: return s("ROM", "ROM")
-        case .all: return s("RAM und ROM", "RAM and ROM")
-        }
-    }
-    static var backupMenu: String { s("Sichern", "Back Up") }
-    static var backupMenuHelp: String { s(
-        "Beim nächsten HotSync dieses Palms Datenbanken auf den Mac holen (nach Backups/)",
-        "Fetch databases to the Mac at this Palm's next HotSync (into Backups/)"
+    static func logRestoreStarting(_ count: Int) -> String { s(
+        "Sicherung wird zurückgespielt: \(count) Datenbanken …", "Restoring the backup: \(count) databases …"
     ) }
-    static func backupMenuItem(_ scope: TabStatus.BackupScope) -> String {
-        switch scope {
-        case .ram: return s("Beim nächsten HotSync: RAM (Programme und Daten)",
-                            "At the next HotSync: RAM (applications and data)")
-        case .rom: return s("Beim nächsten HotSync: ROM (System, Treiber)",
-                            "At the next HotSync: ROM (system, drivers)")
-        case .all: return s("Beim nächsten HotSync: RAM und ROM", "At the next HotSync: RAM and ROM")
-        }
+    static func logRestoreFailed(_ name: String, _ reason: String) -> String { s(
+        "\(name) NICHT zurückgespielt (\(reason))", "\(name) NOT restored (\(reason))"
+    ) }
+    static func logRestoreFinished(_ installed: Int, _ failed: Int) -> String { s(
+        "Zurückgespielt: \(installed) Datenbanken, \(failed) nicht", "Restored: \(installed) databases, \(failed) not"
+    ) }
+
+    // MARK: - Sicherung (Menü)
+
+    static var backupMenu: String { s("Sicherung", "Backup") }
+    static var backupMenuHelp: String { s("Sicherung dieses Palms: zurückspielen, im Finder zeigen", "This Palm's backup: restore, show in the Finder") }
+    static var tabSyncModeLabel: String { s("HotSync:", "HotSync:") }
+    static func allTabsSyncMode(full: Bool) -> String {
+        full ? s("Alle Tabs: Installieren + Sichern", "All Tabs: Install + Back Up")
+             : s("Alle Tabs: Nur installieren", "All Tabs: Install Only")
     }
-    static var backupCancel: String { s("Keine Sicherung", "No backup") }
-    static var backupOpenFolder: String { s("Ordner Backups öffnen", "Open the Backups folder") }
-    static func backupPending(_ scope: TabStatus.BackupScope) -> String { s(
-        "Beim nächsten HotSync wird gesichert: \(backupScopeName(scope))",
-        "Backup at the next HotSync: \(backupScopeName(scope))"
+    static var tabSyncModeFullShort: String { s("Installieren + Sichern", "Install + Back Up") }
+    static var tabSyncModeInstallShort: String { s("Nur installieren", "Install Only") }
+    static var backupRestoreNext: String { s("Beim nächsten HotSync zurückspielen …", "Restore at the next HotSync …") }
+    static var backupRestoreCancel: String { s("Zurückspielen abbrechen", "Cancel the restore") }
+    static var backupOpenFolder: String { s("Sicherung im Finder zeigen", "Show the backup in the Finder") }
+    static func backupSummary(_ count: Int, _ date: String?) -> String {
+        guard count > 0 else { return s("Noch keine Sicherung", "No backup yet") }
+        return date.map { s("\(count) Datenbanken, Stand \($0)", "\(count) databases, as of \($0)") }
+            ?? s("\(count) Datenbanken", "\(count) databases")
+    }
+    static var backupRestorePending: String { s(
+        "Beim nächsten HotSync wird die Sicherung zurückgespielt",
+        "The backup goes back onto the Palm at the next HotSync"
+    ) }
+    static var restoreConfirmTitle: String { s("Sicherung zurückspielen?", "Restore the backup?") }
+    static func restoreConfirmMessage(_ name: String, _ summary: String) -> String { s(
+        "Beim nächsten HotSync von „\(name)“ gehen alle Datenbanken der Sicherung (\(summary)) auf den Palm. Gleichnamige Datenbanken auf dem Palm werden dabei durch den Stand der Sicherung ersetzt.",
+        "At the next HotSync of “\(name)”, all databases of the backup (\(summary)) go onto the Palm. Databases of the same name on the Palm are replaced by the backup's version."
+    ) }
+    static var restoreConfirm: String { s("Zurückspielen", "Restore") }
+    static func newPalmRestore(_ summary: String) -> String { s(
+        "Sicherung zurückspielen (\(summary))", "Restore the backup (\(summary))"
     ) }
     static func logInstalling(_ name: String) -> String { s("Installiere \(name) …", "Installing \(name) …") }
     static func logFileInstalled(_ name: String) -> String { s("\(name) installiert", "\(name) installed") }
@@ -501,6 +557,9 @@ enum L10n {
     // MARK: - DeviceManager Logs
 
     static func logProfileCreated(_ name: String, _ dir: String) -> String { s("Profil erstellt: '\(name)' → \(dir)/", "Profile created: '\(name)' → \(dir)/") }
+    static func logTrashFailed(_ path: String, _ err: String) -> String { s(
+        "\(path) konnte nicht in den Papierkorb: \(err)", "Could not move \(path) to the Trash: \(err)"
+    ) }
     static func logProfileDeleted(_ name: String) -> String { s("Profil gelöscht: '\(name)'", "Profile deleted: '\(name)'") }
     static func logIdentityAssigned(_ name: String, _ userId: UInt32) -> String { s(
         "Palm zugeordnet: \(identity(name, userId))", "Palm assigned: \(identity(name, userId))"

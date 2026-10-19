@@ -250,7 +250,7 @@ private struct TabButton: View {
     private var dotColor: Color {
         guard let status = appState.status(tab.id) else { return .gray }
         switch status.phase {
-        case .syncing, .backingUp: return .blue
+        case .restoring, .syncing, .backingUp: return .blue
         case .listening: return .green
         case .waitingForPort: return .orange
         case .idle:
@@ -401,7 +401,15 @@ private struct NewPalmSheet: View {
     @Environment(AppState.self) var appState
     let prompt: NewPalmPrompt
 
+    /// neues Gerät anlegen oder ein bekanntes übernehmen (z. B. dieser Palm
+    /// nach einem Hard Reset)
+    enum Mode: Hashable { case new, existing }
+
+    @State private var mode = Mode.new
     @State private var name = ""
+    @State private var selectedId: UUID?
+    /// beim Übernehmen eines Geräts mit Sicherung: diese zurückspielen
+    @State private var restoreBackup = true
 
     /// Palm OS speichert höchstens 40 Zeichen Benutzername
     private static let maxNameLength = 40
@@ -419,16 +427,46 @@ private struct NewPalmSheet: View {
                  ? L10n.newPalmBlank
                  : L10n.newPalmUnknown(prompt.user.name, prompt.user.userId))
                 .fixedSize(horizontal: false, vertical: true)
-            if nameEditable {
-                TextField(L10n.newPalmNamePlaceholder, text: $name)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(submit)
+
+            if canTakeOver {
+                Picker("", selection: $mode) {
+                    Text(L10n.newPalmModeNew).tag(Mode.new)
+                    Text(L10n.newPalmModeExisting).tag(Mode.existing)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            if let existing {
-                Label(L10n.newPalmExisting(existing.username), systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+
+            if mode == .existing, canTakeOver {
+                Picker(L10n.newPalmDevice, selection: $selectedId) {
+                    ForEach(devices) { device in
+                        Text(deviceLabel(device)).tag(Optional(device.id))
+                    }
+                }
+                if let device = selectedDevice, appState.backupCount(for: device.id) > 0 {
+                    Toggle(L10n.newPalmRestore(restoreSummary(device)), isOn: $restoreBackup)
+                }
+            } else {
+                if nameEditable {
+                    TextField(L10n.newPalmNamePlaceholder, text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(submit)
+                }
+                if let taken = nameTakenBy {
+                    // derselbe Name: wohl dieser Palm - zum Übernehmen wechseln
+                    HStack(alignment: .firstTextBaseline) {
+                        Label(L10n.newPalmExisting(taken.username), systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button(L10n.newPalmSwitchToTakeOver) {
+                            selectedId = taken.id
+                            mode = .existing
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
+
             Text(hint)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -439,50 +477,82 @@ private struct NewPalmSheet: View {
                     appState.ignoreNewPalm(prompt)
                 }
                 .keyboardShortcut(.cancelAction)
-                if let existing {
-                    Button(L10n.newPalmTakeOver(existing.username)) {
-                        appState.takeOverDevice(for: prompt, profileId: existing.id)
-                    }
-                    .keyboardShortcut(.defaultAction)
+                if mode == .existing, canTakeOver {
+                    Button(selectedDevice.map { L10n.newPalmTakeOver($0.username) } ?? L10n.newPalmModeExisting,
+                           action: submit)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(selectedDevice == nil)
                 } else {
                     Button(L10n.newPalmCreate, action: submit)
                         .keyboardShortcut(.defaultAction)
-                        .disabled(nameEditable && trimmedName.isEmpty)
+                        .disabled((nameEditable && trimmedName.isEmpty) || nameTakenBy != nil)
                 }
             }
         }
         .padding(20)
-        .frame(width: 420)
-        // Vorbelegt mit dem Namen, den der Palm trägt - auch ein Palm ohne
-        // User-ID kann schon einen haben (z. B. von einem anderen Desktop)
-        .onAppear { name = prompt.user.name }
+        .frame(width: 440)
+        .onAppear {
+            // Vorbelegt mit dem Namen, den der Palm trägt - auch ein Palm ohne
+            // User-ID kann schon einen haben (z. B. von einem anderen Desktop).
+            // Gehört er einem Gerät, ist es vermutlich dieses.
+            name = prompt.user.name
+            if canTakeOver, let match = appState.profile(named: trimmedName), !trimmedName.isEmpty {
+                selectedId = match.id
+                mode = .existing
+            } else {
+                selectedId = devices.first?.id
+            }
+        }
     }
 
     /// Ein Name lässt sich nur wählen, solange der Palm verbunden ist: Er
-    /// wird ihm in derselben Sitzung geschrieben.
+    /// wird ihm in derselben Sitzung geschrieben. Ebenso Name und ID eines
+    /// übernommenen Geräts.
     private var nameEditable: Bool { prompt.sessionToken != nil }
+    private var canTakeOver: Bool { nameEditable && !devices.isEmpty }
 
-    /// Ein Gerät, das schon so heißt - dann wird übernommen statt ein
-    /// zweites gleichen Namens angelegt (z. B. ein Palm nach einem Hard Reset).
-    /// Nur mit offener Sitzung: Übernehmen schreibt dem Palm dessen ID.
-    private var existing: DeviceProfile? {
+    /// zuletzt gesyncte zuerst - nach einem Hard Reset das wahrscheinlichste
+    private var devices: [DeviceProfile] {
+        appState.deviceManager.profiles.sorted {
+            ($0.lastSyncAt ?? .distantPast) > ($1.lastSyncAt ?? .distantPast)
+        }
+    }
+
+    private var selectedDevice: DeviceProfile? {
+        selectedId.flatMap { appState.deviceManager.profile($0) }
+    }
+
+    private func deviceLabel(_ device: DeviceProfile) -> String {
+        let count = appState.backupCount(for: device.id)
+        return count > 0 ? L10n.newPalmDeviceWithBackup(device.username, count) : device.username
+    }
+
+    /// Ein neues Gerät darf nicht wie ein bestehendes heißen
+    private var nameTakenBy: DeviceProfile? {
         guard nameEditable, !trimmedName.isEmpty else { return nil }
         return appState.profile(named: trimmedName)
     }
 
+    private func restoreSummary(_ device: DeviceProfile) -> String {
+        L10n.backupSummary(appState.backupCount(for: device.id),
+                           device.lastBackupAt.map { $0.formatted(date: .abbreviated, time: .shortened) })
+    }
+
     private var hint: String {
         if !nameEditable { return L10n.newPalmAgainHint }
-        if existing != nil { return L10n.newPalmTakeOverHint }
+        if mode == .existing, canTakeOver { return L10n.newPalmTakeOverHint }
         if prompt.user.isBlank { return L10n.newPalmBlankHint }
         return trimmedName == prompt.user.name ? L10n.newPalmWaitingHint : L10n.newPalmRenameHint
     }
 
     private func submit() {
-        if let existing {
-            appState.takeOverDevice(for: prompt, profileId: existing.id)
+        if mode == .existing, canTakeOver {
+            guard let device = selectedDevice else { return }
+            let restore = restoreBackup && appState.backupCount(for: device.id) > 0
+            appState.takeOverDevice(for: prompt, profileId: device.id, restore: restore)
             return
         }
-        guard !nameEditable || !trimmedName.isEmpty else { return }
+        guard (!nameEditable || !trimmedName.isEmpty), nameTakenBy == nil else { return }
         appState.createDevice(for: prompt, name: trimmedName)
     }
 }

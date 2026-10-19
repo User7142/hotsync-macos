@@ -14,6 +14,12 @@ struct SyncTab: Codable, Identifiable, Equatable {
     /// Lauscht von selbst, sobald der Anschluss frei ist - wie HotSync bis
     /// 1.0.x. Ohne: nur per Start-Knopf oder als Schritt einer Kette.
     var autoListen: Bool
+    /// Vollständiger HotSync: nach den Installationen die Datenbanken im RAM
+    /// sichern. false: nur installieren (z. B. für einen langsamen seriellen
+    /// Tab). nil: vollständig - so wie Tabs von vor dieser Einstellung.
+    var fullSync: Bool?
+
+    var isFullSync: Bool { fullSync ?? true }
 
     init(id: UUID = UUID(), profileId: UUID, port: String, baudRate: Int = SyncTab.defaultBaudRate,
          autoListen: Bool) {

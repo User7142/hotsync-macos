@@ -7,6 +7,8 @@ struct DeviceProfile: Codable, Identifiable, Equatable {
     let createdAt: Date
     var lastSyncAt: Date?
     var deviceNote: String?
+    /// Ende der letzten vollständigen Sicherung
+    var lastBackupAt: Date?
 
     /// false, solange noch kein Palm diesem Profil zugeordnet ist (User-ID 0):
     /// Dann übernimmt der erste Palm ohne Benutzer, der in einem Tab dieses

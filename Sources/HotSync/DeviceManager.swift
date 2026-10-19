@@ -48,9 +48,16 @@ final class DeviceManager {
     func deleteProfile(_ profile: DeviceProfile) {
         profiles.removeAll { $0.id == profile.id }
 
-        // Profil-Ordner löschen
+        // Profil-Ordner in den Papierkorb: er enthält die Sicherung des Palms,
+        // die muss sich zurückholen lassen
         let dir = profileDirectory(for: profile)
-        try? fm.removeItem(at: dir)
+        if fm.fileExists(atPath: dir.path) {
+            do {
+                try fm.trashItem(at: dir, resultingItemURL: nil)
+            } catch {
+                DebugLog.shared.log(L10n.logTrashFailed(dir.path, error.localizedDescription), source: "Device")
+            }
+        }
 
         saveProfiles()
         DebugLog.shared.log(L10n.logProfileDeleted(profile.username), source: "Device")
@@ -92,14 +99,20 @@ final class DeviceManager {
         profileDirectory(for: profile).appendingPathComponent("Installed")
     }
 
-    func backupsDirectory(for profile: DeviceProfile) -> URL {
-        profileDirectory(for: profile).appendingPathComponent("Backups")
+    /// Die Sicherung: der letzte Stand jeder Datenbank im RAM des Palms
+    func backupDirectory(for profile: DeviceProfile) -> URL {
+        profileDirectory(for: profile).appendingPathComponent("Backup")
+    }
+
+    func updateLastBackup(for profileId: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else { return }
+        profiles[index].lastBackupAt = Date()
+        saveProfiles()
     }
 
     func ensureProfileDirectories(_ profile: DeviceProfile) {
         try? fm.createDirectory(at: installDirectory(for: profile), withIntermediateDirectories: true)
         try? fm.createDirectory(at: installedDirectory(for: profile), withIntermediateDirectories: true)
-        try? fm.createDirectory(at: backupsDirectory(for: profile), withIntermediateDirectories: true)
     }
 
     // MARK: - Migration

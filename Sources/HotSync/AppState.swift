@@ -211,10 +211,13 @@ final class AppState {
     /// Dialog "Neuer Palm", "übernehmen": Der Palm ist ein Gerät, das HotSync
     /// schon kennt - etwa nach einem Hard Reset. Er bekommt in derselben
     /// Sitzung Name und ID dieses Profils zurück, dann dessen Warteschlange.
-    func takeOverDevice(for prompt: NewPalmPrompt, profileId: UUID) {
+    /// `restore`: in derselben Sitzung auch die Sicherung des Geräts zurück -
+    /// der Palm nach einem Datenverlust (leere Batterien, Hard Reset).
+    func takeOverDevice(for prompt: NewPalmPrompt, profileId: UUID, restore: Bool) {
         newPalmPrompt = nil
         guard let session = waitingSession(for: prompt) else { return }
         session.awaitingDecision = false
+        requestRestore(restore, for: profileId)
         // install() sucht den Tab des Profils unter den Auto-Tabs des Anschlusses
         if !autoTabs(on: prompt.port).contains(where: { $0.profileId == profileId }) {
             saveTab(SyncTab(profileId: profileId, port: prompt.port, autoListen: true))
@@ -305,17 +308,59 @@ final class AppState {
     func clearResult(_ tabId: UUID) {
         statuses[tabId]?.lastResult = nil
         statuses[tabId]?.lastBackup = nil
+        statuses[tabId]?.lastRestore = nil
     }
 
     // MARK: - Sicherung
 
-    /// Sicherungen, die beim nächsten HotSync eines Profils laufen (nach den
-    /// Installationen). Nur bis die Sicherung durch ist oder die App endet.
-    private(set) var backupRequests: [UUID: TabStatus.BackupScope] = [:]
+    /// Profile, deren Sicherung beim nächsten HotSync auf den Palm
+    /// zurückgeht (vor den Installationen). Gilt, bis das geschehen ist
+    /// oder die App endet.
+    private(set) var restoreRequests: Set<UUID> = []
 
-    /// nil: keine Sicherung (mehr)
-    func requestBackup(_ scope: TabStatus.BackupScope?, for profileId: UUID) {
-        backupRequests[profileId] = scope
+    func requestRestore(_ restore: Bool, for profileId: UUID) {
+        if restore { restoreRequests.insert(profileId) } else { restoreRequests.remove(profileId) }
+    }
+
+    func setFullSync(_ enabled: Bool, for tabId: UUID) {
+        guard var tab = tabStore.tab(tabId), tab.isFullSync != enabled else { return }
+        tab.fullSync = enabled
+        saveTab(tab)
+    }
+
+    func setFullSyncForAllTabs(_ enabled: Bool) {
+        for var tab in tabStore.tabs where tab.isFullSync != enabled {
+            tab.fullSync = enabled
+            tabStore.save(tab)
+        }
+    }
+
+    /// Datenbanken in der Sicherung - gezählt, nicht geprüft (das tut erst
+    /// das Zurückspielen); für die Anzeige
+    func backupCount(for profileId: UUID) -> Int {
+        guard let profile = deviceManager.profile(profileId),
+              let names = try? FileManager.default.contentsOfDirectory(
+                atPath: deviceManager.backupDirectory(for: profile).path) else { return 0 }
+        return names.filter { PalmDatabaseFile.supportedExtensions.contains(($0 as NSString).pathExtension.lowercased()) }.count
+    }
+
+    /// Die Datenbanken einer Sicherung, in der Reihenfolge zum Zurückspielen
+    func backupFiles(for profileId: UUID) -> [URL] {
+        guard let profile = deviceManager.profile(profileId) else { return [] }
+        let dir = deviceManager.backupDirectory(for: profile)
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
+        var byName: [String: URL] = [:]
+        var items: [RestoreOrder.Item] = []
+        for url in urls {
+            // nur fertig gesicherte Datenbanken, keine .part einer abgebrochenen
+            guard case .success(let db) = PalmDatabaseFile.inspect(url: url) else { continue }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            byName[url.lastPathComponent] = url
+            items.append(RestoreOrder.Item(name: url.lastPathComponent, type: db.type,
+                                           creator: db.creator, size: size))
+        }
+        return RestoreOrder.sorted(items).compactMap { byName[$0.name] }
     }
 
     /// Hinweise und Ablehnungen zu einem Palm, der jetzt zugeordnet ist.
@@ -533,10 +578,18 @@ final class AppState {
         var installed: Set<URL> = []
         var failed: [String: InstallFailure] = [:]
         var rejection: TabStatus.Rejection?
-        /// angefragte Sicherung: nach den Installationen
-        var backupScope: TabStatus.BackupScope?
-        var backupDirectory: URL?
+        /// Ablauf einer angenommenen Sitzung: zurückspielen (falls angefragt),
+        /// die Warteschlange installieren, sichern (falls eingeschaltet)
+        enum Stage { case restoring, installing, backingUp }
+        var stage: Stage = .installing
+        var restoreFiles: [URL] = []
+        var restoreDone = 0
+        var restoreFailed = 0
+        var backupEnabled = false
+        var backupTotal = 0
+        var backupDone = 0
         var backupSaved = 0
+        var backupUnchanged = 0
         var backupFailed = 0
         var backupFinished = false
         var timedOut = false
@@ -618,12 +671,23 @@ final class AppState {
 
         case .installing(let file):
             guard let tabId = session.tabId, let user = session.user else { return }
-            statuses[tabId]?.phase = .syncing(user: user, file: file, done: session.results,
-                                               total: session.files.count)
-            tabLog(tabId, L10n.logInstalling(file))
+            if session.stage == .restoring {
+                statuses[tabId]?.phase = .restoring(user: user, file: file, done: session.restoreDone,
+                                                     total: session.restoreFiles.count)
+            } else {
+                statuses[tabId]?.phase = .syncing(user: user, file: file, done: session.results,
+                                                   total: session.files.count)
+                tabLog(tabId, L10n.logInstalling(file))
+            }
 
         case .progress:
             break
+
+        case .installed(let file, _) where session.stage == .restoring:
+            restoreFileDone(session, file: file, failure: nil)
+
+        case .failed(let file, let failure) where session.stage == .restoring:
+            restoreFileDone(session, file: file, failure: failure)
 
         case .installed(let file, _):
             if let url = session.files.first(where: { $0.lastPathComponent == file }) {
@@ -639,26 +703,34 @@ final class AppState {
             }
             fileDone(session)
 
-        case .backupStarted:
-            break
+        case .backupStarted(_, let total):
+            session.backupTotal = total
+            backupProgress(session, file: nil)
 
-        case .backingUp(let file, _):
-            if let tabId = session.tabId, let user = session.user {
-                statuses[tabId]?.phase = .backingUp(user: user, file: file, saved: session.backupSaved)
-            }
+        case .backingUp(let file, let index, _):
+            session.backupDone = index - 1
+            backupProgress(session, file: file)
+
+        case .backupUnchanged(_, let index):
+            session.backupDone = index
+            session.backupUnchanged += 1
+            backupProgress(session, file: nil)
 
         case .backedUp(let file, let bytes):
+            session.backupDone += 1
             session.backupSaved += 1
             if let tabId = session.tabId { tabLog(tabId, L10n.logBackedUp(file, bytes)) }
+            backupProgress(session, file: nil)
 
         case .backupFailed(let file, let palmOSError):
+            session.backupDone += 1
             session.backupFailed += 1
             if let tabId = session.tabId { tabLog(tabId, L10n.logBackupFailed(file, palmOSError)) }
 
-        case .backupFinished(let saved, let failed):
-            session.backupFinished = true
-            if let profileId = session.profileId { backupRequests[profileId] = nil }
-            if let tabId = session.tabId { tabLog(tabId, L10n.logBackupFinished(saved, failed)) }
+        case .backupFinished(let saved, let unchanged, let failed):
+            // vollständig nur, wenn jede Datenbank durch ist (nicht abgebrochen)
+            session.backupFinished = session.backupDone >= session.backupTotal
+            if let tabId = session.tabId { tabLog(tabId, L10n.logBackupFinished(saved, unchanged, failed)) }
             endSession(session)
 
         case .finished:
@@ -745,22 +817,65 @@ final class AppState {
 
         let files = queue.pendingFiles
         session.files = files
-        if let scope = backupRequests[profileId], let profile = deviceManager.profile(profileId) {
-            session.backupScope = scope
-            session.backupDirectory = deviceManager.backupsDirectory(for: profile)
-                .appendingPathComponent(Self.backupFolderName(Date()))
-        }
         queue.beginInstall(files, session: session.token)
-        statuses[tabId]?.phase = .syncing(user: user, file: nil, done: 0, total: files.count)
+        if restoreRequests.remove(profileId) != nil {
+            session.restoreFiles = backupFiles(for: profileId)
+        }
+        // Nach dem Zurückspielen nicht gleich wieder sichern: der Palm hat
+        // gerade die Sicherung bekommen
+        session.backupEnabled = (tabStore.tab(tabId)?.isFullSync ?? false) && session.restoreFiles.isEmpty
         statuses[tabId]?.lastResult = nil
+        statuses[tabId]?.lastBackup = nil
+        statuses[tabId]?.lastRestore = nil
         tabLog(tabId, L10n.logPalmConnected(user.name, user.userId, files.count))
 
-        if files.isEmpty {
-            installsDone(session)
+        if session.restoreFiles.isEmpty {
+            startInstalls(session)
         } else {
-            for file in files {
+            session.stage = .restoring
+            statuses[tabId]?.phase = .restoring(user: user, file: nil, done: 0, total: session.restoreFiles.count)
+            tabLog(tabId, L10n.logRestoreStarting(session.restoreFiles.count))
+            for file in session.restoreFiles {
                 session.runner.send("install \(file.path)")
             }
+        }
+    }
+
+    /// Eine Datenbank der Sicherung ist zurück (oder nicht); nach der
+    /// letzten folgt die Warteschlange.
+    private func restoreFileDone(_ session: Session, file: String, failure: InstallFailure?) {
+        session.restoreDone += 1
+        if let tabId = session.tabId {
+            if let failure {
+                session.restoreFailed += 1
+                tabLog(tabId, L10n.logRestoreFailed(file, L10n.restoreFailureText(failure)))
+            }
+            if let user = session.user {
+                statuses[tabId]?.phase = .restoring(user: user, file: nil, done: session.restoreDone,
+                                                     total: session.restoreFiles.count)
+            }
+        }
+        if session.restoreDone == session.restoreFiles.count {
+            if let tabId = session.tabId {
+                tabLog(tabId, L10n.logRestoreFinished(session.restoreDone - session.restoreFailed,
+                                                      session.restoreFailed))
+            }
+            startInstalls(session)
+        }
+    }
+
+    /// Die Warteschlange auf den Palm
+    private func startInstalls(_ session: Session) {
+        session.stage = .installing
+        guard !session.files.isEmpty else {
+            installsDone(session)
+            return
+        }
+        if let tabId = session.tabId, let user = session.user {
+            statuses[tabId]?.phase = .syncing(user: user, file: nil, done: 0, total: session.files.count)
+        }
+        for file in session.files {
+            session.runner.send("install \(file.path)")
         }
     }
 
@@ -775,24 +890,24 @@ final class AppState {
         }
     }
 
-    /// Alle Dateien sind durch: noch sichern, falls angefragt, sonst Ende.
+    /// Alle Dateien sind durch: sichern, falls eingeschaltet, sonst Ende.
     private func installsDone(_ session: Session) {
-        guard let scope = session.backupScope, let directory = session.backupDirectory,
-              let tabId = session.tabId, let user = session.user else {
+        guard session.backupEnabled, let profileId = session.profileId,
+              let profile = deviceManager.profile(profileId), let tabId = session.tabId else {
             endSession(session)
             return
         }
-        statuses[tabId]?.phase = .backingUp(user: user, file: nil, saved: 0)
-        tabLog(tabId, L10n.logBackupStarting(scope, directory.path))
-        session.runner.send("backup \(scope.rawValue) \(directory.path)")
+        session.stage = .backingUp
+        backupProgress(session, file: nil)
+        let directory = deviceManager.backupDirectory(for: profile)
+        tabLog(tabId, L10n.logBackupStarting(directory.path))
+        session.runner.send("backup \(directory.path)")
     }
 
-    /// Ordner einer Sicherung: Datum und Uhrzeit, sortiert sich von selbst
-    private static func backupFolderName(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        return f.string(from: date)
+    private func backupProgress(_ session: Session, file: String?) {
+        guard let tabId = session.tabId, let user = session.user else { return }
+        statuses[tabId]?.phase = .backingUp(user: user, file: file, done: session.backupDone,
+                                             total: session.backupTotal)
     }
 
     /// Alle Dateien sind durch: Eintrag ins HotSync-Log des Palms, Ende.
@@ -846,6 +961,9 @@ final class AppState {
             }
             queue.finishInstall(session: session.token, installed: session.installed, failed: failed)
             deviceManager.updateLastSync(for: profileId)
+            if session.backupFinished {
+                deviceManager.updateLastBackup(for: profileId)
+            }
             if !session.installed.isEmpty {
                 NotificationManager.shared.send(title: L10n.syncCompleteNotifTitle,
                                                 body: L10n.syncCompleteNotifBody(session.installed.count))
@@ -878,11 +996,18 @@ final class AppState {
             if let result {
                 statuses[tabId]?.lastResult = result
             }
+            if session.admitted, !session.restoreFiles.isEmpty {
+                statuses[tabId]?.lastRestore = TabStatus.Restore(
+                    installed: session.restoreDone - session.restoreFailed,
+                    failed: session.restoreFailed + (session.restoreFiles.count - session.restoreDone),
+                    total: session.restoreFiles.count)
+            }
             // auch eine abgebrochene Sicherung zeigt, was schon da ist
-            if let directory = session.backupDirectory, session.backupSaved + session.backupFailed > 0 {
+            if session.stage == .backingUp, session.backupTotal > 0 {
                 statuses[tabId]?.lastBackup = TabStatus.Backup(saved: session.backupSaved,
+                                                               unchanged: session.backupUnchanged,
                                                                failed: session.backupFailed,
-                                                               directory: directory)
+                                                               complete: session.backupFinished)
                 if !session.backupFinished { tabLog(tabId, L10n.logBackupIncomplete) }
             }
         }

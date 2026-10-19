@@ -48,6 +48,18 @@ struct TabEditorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Picker(L10n.tabSyncMode, selection: Binding(
+                    get: { draft.isFullSync },
+                    set: { draft.fullSync = $0 }
+                )) {
+                    Text(L10n.tabSyncModeFull).tag(true)
+                    Text(L10n.tabSyncModeInstall).tag(false)
+                }
+                Text(L10n.tabSyncModeHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let duplicate {
