@@ -302,3 +302,21 @@ private let t3 = ProfileIdentity(id: UUID(), userId: 88143)
     ]
     #expect(RestoreOrder.sorted(items).map(\.name) == ["b", "a", "app"])
 }
+
+@Test func romEvents() {
+    #expect(SessionEvent.parse(#"{"event":"romStarted","file":"PalmOS-4.1.0.rom","version":"4.1.0","total":4194304}"#)
+            == .romStarted(file: "PalmOS-4.1.0.rom", version: "4.1.0", total: 4_194_304))
+    #expect(SessionEvent.parse(#"{"event":"romProgress","bytes":4096}"#) == .romProgress(bytes: 4096))
+    #expect(SessionEvent.parse(#"{"event":"romFinished","file":"PalmOS-4.1.0.rom","bytes":4194304}"#)
+            == .romFinished(file: "PalmOS-4.1.0.rom", bytes: 4_194_304))
+    #expect(SessionEvent.parse(#"{"event":"romUnsupported","version":"5.2.1"}"#)
+            == .romUnsupported(version: "5.2.1"))
+    #expect(SessionEvent.parse(#"{"event":"romStarted","file":"x.rom"}"#) == nil)
+}
+
+@Test func palmOSMajorVersion() {
+    // sysMakeROMVersion: major in the top byte, BCD-coded tens and units
+    #expect(PalmOSVersion(rom: 0x0410_3000).major == 4)
+    #expect(PalmOSVersion(rom: 0x0521_3000).major == 5)
+    #expect(PalmOSVersion(rom: 0x0410_3000).description == "4.1.0")
+}

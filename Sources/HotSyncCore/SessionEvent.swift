@@ -36,6 +36,13 @@ public enum SessionEvent: Equatable, Sendable {
     case backedUp(file: String, bytes: Int)
     case backupFailed(file: String, palmOSError: Int)
     case backupFinished(saved: Int, unchanged: Int, failed: Int)
+    /// ROM dump into `file` (name in the folder given): `total` bytes of
+    /// Palm OS `version`
+    case romStarted(file: String, version: String, total: Int)
+    case romProgress(bytes: Int)
+    case romFinished(file: String, bytes: Int)
+    /// Palm OS 5 and later: the ROM cannot be read over HotSync
+    case romUnsupported(version: String)
     case finished
     case error(stage: String, message: String)
 
@@ -57,6 +64,7 @@ public enum SessionEvent: Equatable, Sendable {
         let saved: Int?
         let unchanged: Int?
         let failed: Int?
+        let version: String?
     }
 
     /// Reads one output line; nil for anything that is not a known event
@@ -105,6 +113,17 @@ public enum SessionEvent: Equatable, Sendable {
             return .backupFailed(file: file, palmOSError: l.palmOSError ?? 0)
         case "backupFinished":
             return .backupFinished(saved: l.saved ?? 0, unchanged: l.unchanged ?? 0, failed: l.failed ?? 0)
+        case "romStarted":
+            guard let file = l.file, let version = l.version, let total = l.total else { return nil }
+            return .romStarted(file: file, version: version, total: total)
+        case "romProgress":
+            guard let bytes = l.bytes else { return nil }
+            return .romProgress(bytes: bytes)
+        case "romFinished":
+            guard let file = l.file, let bytes = l.bytes else { return nil }
+            return .romFinished(file: file, bytes: bytes)
+        case "romUnsupported":
+            return .romUnsupported(version: l.version ?? "")
         case "finished":
             return .finished
         case "error":
