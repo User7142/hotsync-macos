@@ -31,6 +31,7 @@ The licenses of the included pilot-link library (libpisock) and libusb are in
 - **Reasons, not just "failed"** &ndash; a file the Palm refused stays in the queue with the reason (e.g. protected or in use on the Palm, not enough memory) and is tried again with the next HotSync
 - **Backups with every HotSync** &ndash; after the installs, the Palm's RAM databases (applications, data, settings) are fetched into `~/HotSync/<device>/Backup/`: all of them the first time, afterwards only the ones that changed, so later backups take seconds. A progress bar shows "12 of 257 databases". A backup cut short (cancel on the Palm, cable pulled) keeps the previous state of every database it did not get to. Per tab, **"HotSync: Install + Back Up"** or **"Install Only"** (say, for a slow serial tab), or set for all tabs at once
 - **Restore** &ndash; "Backup → Restore at the next HotSync" puts the whole backup back onto the Palm. For a Palm that lost its memory (empty batteries, a dead backup capacitor, a hard reset): put it into the cradle, press HotSync, choose **Take Over a Known Device** and the device in the dialog, keep "Restore the backup" ticked &ndash; one HotSync brings back its name and ID, applications, data and settings
+- **ROM dump** &ndash; "Backup → Read the ROM at the next HotSync" saves the Palm's ROM image as `~/HotSync/<device>/ROM/PalmOS-<version>.rom`, with a progress bar (an m515's 4 MB take under 3 minutes) &ndash; for emulators such as POSE or CloudpilotEmu. Palm OS 1 to 4 only: Palm OS 5 dropped the remote calls of the HotSync protocol this needs (they crash the Palm), so HotSync checks the version first and does not try
 - **New Palms are asked about** &ndash; a Palm HotSync does not know yet brings up a dialog while it waits in the cradle: add it as a **new device** with its own tab and queue, under its own name or a new one, or **take over a known device** picked from a list (with its backup). Name and ID are written to that very Palm in the same HotSync, which then goes on to install its queue
 - **The window follows the HotSync** &ndash; when a Palm connects, the window switches to its tab
 - **Remove from the queue** &ndash; every file has a trash button (moves it to the Trash)
@@ -102,7 +103,8 @@ user ID; when such a Palm connects, assign it once.
 └── <device>/
     ├── Install/      ← put .prc/.pdb files here
     ├── Installed/    ← moved here after the sync
-    └── Backup/       ← the Palm's databases, updated with every HotSync
+    ├── Backup/       ← the Palm's databases, updated with every HotSync
+    └── ROM/          ← the ROM image, when read (Palm OS 1–4)
 ```
 
 ## Building
