@@ -21,6 +21,8 @@
  *             log <Text>       Eintrag ins HotSync-Log des Palms
  *             backup <Ordner>  die Datenbanken im RAM nach <Ordner> sichern
  *                              (nur die seit der letzten Sicherung geänderten)
+ *             getrom <Ordner>  das ROM nach <Ordner>/PalmOS-<Version>.rom
+ *                              auslesen (nur Palm OS 1-4)
  *             end              Sitzung sauber beenden
  *
  * Exit:     0 Sitzung beendet, 1 Fehler, 2 kein Palm innerhalb des Timeouts
@@ -40,6 +42,7 @@
 #include "pi-dlp.h"
 #include "pi-file.h"
 #include "pi-socket.h"
+#include "pi-syspkt.h"
 
 /* ---- JSON-Ausgabe -------------------------------------------------------- */
 
@@ -457,6 +460,162 @@ static void backup(int sd, const char *dir)
 	emit_end();
 }
 
+/* ---- ROM --------------------------------------------------------------- */
+
+/* Bytes je RPC-Aufruf und wie oft dabei nach "Abbrechen" auf dem Palm und
+ * nach dem Fortschritt geschaut wird - wie pilot-getrom */
+#define ROM_CHUNK		256
+#define ROM_CANCEL_EVERY	8
+#define ROM_PROGRESS_EVERY	16
+
+/* Text unten auf den Bildschirm des Palms (WinDrawChars). Nur zur Anzeige:
+ * scheitert es, geht das Auslesen trotzdem weiter. dlp_RPC schreibt die
+ * Daten jedes Zeiger-Parameters nach dem Aufruf zurück - der Text muss
+ * daher in einem beschreibbaren Puffer liegen, nicht in einer Konstante. */
+static void draw_on_palm(int sd, const char *text, int x)
+{
+	struct RPC_params p;
+	char buffer[64];
+	size_t len = strlen(text);
+
+	if (len >= sizeof(buffer))
+		len = sizeof(buffer) - 1;
+	memcpy(buffer, text, len);
+	buffer[len] = '\0';
+	PackRPC(&p, 0xA220, RPC_IntReply, RPC_Ptr(buffer, len),
+		RPC_Short(len), RPC_Short(x), RPC_Short(28), RPC_End);
+	dlp_RPC(sd, &p, NULL);
+}
+
+/* "getrom <Ordner>": das ROM des Palms lesen, über DLP-RPC wie pilot-getrom
+ * (MemMove aus dem ROM in 256-Byte-Stücken). Palm OS 5 kennt diese RPCs
+ * nicht mehr und stürzt ab - dort nur "romUnsupported". Anders als
+ * pilot-getrom bricht jeder RPC-Fehler ab, statt Müll in die Datei zu
+ * schreiben; geschrieben wird über <Datei>.part.
+ * Ereignisse: romStarted (Datei, Version, Größe), romProgress (Bytes),
+ * romFinished oder romUnsupported, sonst error. */
+static void get_rom(int sd, const char *dir)
+{
+	struct RPC_params p;
+	unsigned long feature, rom_start, rom_length, offset = 0, chunks = 0;
+	int major, minor, bugfix;
+	char version[32], name[64], path[PATH_MAX], part[PATH_MAX + 8];
+	unsigned char buffer[ROM_CHUNK];
+	FILE *out;
+
+	if (dlp_ReadFeature(sd, FOURCC('p', 's', 'y', 's'), 1, &feature) < 0) {
+		emit_error("rom", "cannot read the Palm OS version");
+		return;
+	}
+	major = (int)(((feature >> 28) & 0xF) * 10 + ((feature >> 24) & 0xF));
+	minor = (int)((feature >> 20) & 0xF);
+	bugfix = (int)((feature >> 16) & 0xF);
+	snprintf(version, sizeof(version), "%d.%d.%d", major, minor, bugfix);
+
+	if (major >= 5) {
+		emit_begin("romUnsupported");
+		emit_str("version", version, 0);
+		emit_end();
+		return;
+	}
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+		emit_error("rom", "cannot create %s (%s)", dir, strerror(errno));
+		return;
+	}
+
+	/* Anfang und Länge des ROM (Karte 0) */
+	PackRPC(&p, 0xA23E, RPC_IntReply, RPC_Long(0xFFFFFFFF), RPC_End);
+	if (dlp_RPC(sd, &p, &rom_start) < 0) {
+		emit_error("rom", "cannot find the ROM (%d)", pi_error(sd));
+		return;
+	}
+	PackRPC(&p, 0xA23E, RPC_IntReply, RPC_Long(rom_start), RPC_End);
+	if (dlp_RPC(sd, &p, &rom_length) < 0) {
+		emit_error("rom", "cannot read the ROM size (%d)", pi_error(sd));
+		return;
+	}
+	/* Palm OS 3.0 meldet 1 MB für ein ROM von 2 MB (wie pilot-getrom) */
+	if (major == 3 && minor == 0 && rom_length == 0x100000)
+		rom_length = 0x200000;
+	if (rom_length == 0 || rom_length > 0x4000000) {
+		emit_error("rom", "implausible ROM size %lu", rom_length);
+		return;
+	}
+
+	snprintf(name, sizeof(name), "PalmOS-%s.rom", version);
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	snprintf(part, sizeof(part), "%s.part", path);
+	out = fopen(part, "wb");
+	if (out == NULL) {
+		emit_error("rom", "cannot write %s (%s)", part, strerror(errno));
+		return;
+	}
+
+	emit_begin("romStarted");
+	emit_str("file", name, 0);
+	emit_str("version", version, 0);
+	emit_int("total", (long)rom_length);
+	emit_end();
+
+	/* Bildschirm des Palms leeren (WinEraseWindow), dann der Hinweis */
+	PackRPC(&p, 0xA164, RPC_IntReply, RPC_Byte(1), RPC_End);
+	dlp_RPC(sd, &p, NULL);
+	draw_on_palm(sd, "Downloading ROM ...", 0);
+
+	while (offset < rom_length) {
+		unsigned long len = rom_length - offset;
+
+		if (len > ROM_CHUNK)
+			len = ROM_CHUNK;
+		PackRPC(&p, 0xA026, RPC_IntReply, RPC_Ptr(buffer, len),
+			RPC_Long(rom_start + offset), RPC_Long(len), RPC_End);
+		if (dlp_RPC(sd, &p, NULL) < 0) {
+			emit_error("rom", "reading the ROM at %lu failed (%d)", offset, pi_error(sd));
+			break;
+		}
+		if (fwrite(buffer, 1, len, out) != len) {
+			emit_error("rom", "cannot write %s (%s)", part, strerror(errno));
+			break;
+		}
+		offset += len;
+		chunks++;
+
+		if (chunks % ROM_CANCEL_EVERY == 0 && dlp_OpenConduit(sd) < 0) {
+			emit_error("rom", "cancelled on the Palm or connection lost");
+			break;
+		}
+		if (chunks % ROM_PROGRESS_EVERY == 0 || offset == rom_length) {
+			char text[32];
+
+			emit_begin("romProgress");
+			emit_int("bytes", (long)offset);
+			emit_end();
+			if (chunks % (ROM_PROGRESS_EVERY * 16) == 0) {
+				snprintf(text, sizeof(text), "%lu KB", offset / 1024);
+				draw_on_palm(sd, text, 110);
+			}
+		}
+	}
+
+	if (fclose(out) != 0 && offset == rom_length) {
+		emit_error("rom", "cannot write %s (%s)", part, strerror(errno));
+		offset = 0;
+	}
+	if (offset < rom_length) {
+		unlink(part);
+		return;
+	}
+	if (rename(part, path) != 0) {
+		emit_error("rom", "cannot write %s (%s)", path, strerror(errno));
+		unlink(part);
+		return;
+	}
+	emit_begin("romFinished");
+	emit_str("file", name, 0);
+	emit_int("bytes", (long)rom_length);
+	emit_end();
+}
+
 /* ---- Sitzung ------------------------------------------------------------ */
 
 static int connect_palm(const char *port, int timeout)
@@ -609,6 +768,8 @@ static void run_commands(int sd)
 			install_file(sd, line + 8);
 		} else if (strncmp(line, "backup ", 7) == 0) {
 			backup(sd, line + 7);
+		} else if (strncmp(line, "getrom ", 7) == 0) {
+			get_rom(sd, line + 7);
 		} else if (strncmp(line, "setuser ", 8) == 0) {
 			write_user(sd, line + 8);
 		} else if (strncmp(line, "log ", 4) == 0) {
