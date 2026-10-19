@@ -27,13 +27,15 @@ public enum SessionEvent: Equatable, Sendable {
     case installed(file: String, bytes: Int)
     case failed(file: String, InstallFailure)
     case userWritten(PalmUser)
-    /// backup: databases are being fetched into this directory
-    case backupStarted(directory: String)
-    /// one database (file name as saved) from the RAM or the ROM list
-    case backingUp(file: String, rom: Bool)
+    /// backup of the RAM databases into this directory: `total` databases
+    case backupStarted(directory: String, total: Int)
+    /// database `index` of `total` (file name as saved) is being fetched
+    case backingUp(file: String, index: Int, total: Int)
+    /// database `index` did not change since the last backup: skipped
+    case backupUnchanged(file: String, index: Int)
     case backedUp(file: String, bytes: Int)
     case backupFailed(file: String, palmOSError: Int)
-    case backupFinished(saved: Int, failed: Int)
+    case backupFinished(saved: Int, unchanged: Int, failed: Int)
     case finished
     case error(stage: String, message: String)
 
@@ -50,8 +52,10 @@ public enum SessionEvent: Equatable, Sendable {
         let stage: String?
         let message: String?
         let directory: String?
-        let list: String?
+        let index: Int?
+        let total: Int?
         let saved: Int?
+        let unchanged: Int?
         let failed: Int?
     }
 
@@ -85,10 +89,14 @@ public enum SessionEvent: Equatable, Sendable {
             guard let name = l.user, let userId = l.userId else { return nil }
             return .userWritten(PalmUser(name: name, userId: userId))
         case "backupStarted":
-            return .backupStarted(directory: l.directory ?? "")
+            guard let directory = l.directory else { return nil }
+            return .backupStarted(directory: directory, total: l.total ?? 0)
         case "backingUp":
-            guard let file = l.file else { return nil }
-            return .backingUp(file: file, rom: l.list == "rom")
+            guard let file = l.file, let index = l.index else { return nil }
+            return .backingUp(file: file, index: index, total: l.total ?? 0)
+        case "backupUnchanged":
+            guard let file = l.file, let index = l.index else { return nil }
+            return .backupUnchanged(file: file, index: index)
         case "backedUp":
             guard let file = l.file else { return nil }
             return .backedUp(file: file, bytes: l.bytes ?? 0)
@@ -96,7 +104,7 @@ public enum SessionEvent: Equatable, Sendable {
             guard let file = l.file else { return nil }
             return .backupFailed(file: file, palmOSError: l.palmOSError ?? 0)
         case "backupFinished":
-            return .backupFinished(saved: l.saved ?? 0, failed: l.failed ?? 0)
+            return .backupFinished(saved: l.saved ?? 0, unchanged: l.unchanged ?? 0, failed: l.failed ?? 0)
         case "finished":
             return .finished
         case "error":

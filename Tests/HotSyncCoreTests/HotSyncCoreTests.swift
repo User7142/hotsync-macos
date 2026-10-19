@@ -122,19 +122,21 @@ private func imageWithVersion(_ version: String?) -> Data {
 }
 
 @Test func backupEvents() {
-    #expect(SessionEvent.parse(#"{"event":"backupStarted","directory":"/tmp/b"}"#)
-            == .backupStarted(directory: "/tmp/b"))
-    #expect(SessionEvent.parse(#"{"event":"backingUp","file":"MSSlot.prc","list":"rom"}"#)
-            == .backingUp(file: "MSSlot.prc", rom: true))
-    #expect(SessionEvent.parse(#"{"event":"backingUp","file":"MemoDB.pdb","list":"ram"}"#)
-            == .backingUp(file: "MemoDB.pdb", rom: false))
+    #expect(SessionEvent.parse(#"{"event":"backupStarted","directory":"/tmp/b","total":257}"#)
+            == .backupStarted(directory: "/tmp/b", total: 257))
+    #expect(SessionEvent.parse(#"{"event":"backingUp","file":"MemoDB.pdb","index":3,"total":257}"#)
+            == .backingUp(file: "MemoDB.pdb", index: 3, total: 257))
+    #expect(SessionEvent.parse(#"{"event":"backupUnchanged","file":"AddressDB.pdb","index":4}"#)
+            == .backupUnchanged(file: "AddressDB.pdb", index: 4))
     #expect(SessionEvent.parse(#"{"event":"backedUp","file":"MemoDB.pdb","bytes":2048}"#)
             == .backedUp(file: "MemoDB.pdb", bytes: 2048))
     #expect(SessionEvent.parse(#"{"event":"backupFailed","file":"x.prc","reason":"palmError","error":-301,"palmOSError":5}"#)
             == .backupFailed(file: "x.prc", palmOSError: 5))
-    #expect(SessionEvent.parse(#"{"event":"backupFinished","saved":120,"failed":2}"#)
-            == .backupFinished(saved: 120, failed: 2))
-    #expect(SessionEvent.parse(#"{"event":"backingUp"}"#) == nil)
+    #expect(SessionEvent.parse(#"{"event":"backupFinished","saved":12,"unchanged":244,"failed":1}"#)
+            == .backupFinished(saved: 12, unchanged: 244, failed: 1))
+    // without the fields that identify the database: not a known event
+    #expect(SessionEvent.parse(#"{"event":"backingUp","file":"MemoDB.pdb"}"#) == nil)
+    #expect(SessionEvent.parse(#"{"event":"backupStarted"}"#) == nil)
 }
 
 @Test func brokenLines() {
@@ -278,4 +280,25 @@ private let t3 = ProfileIdentity(id: UUID(), userId: 88143)
     selection.retain(["b", "c"])
     #expect(selection.selected == ["b", "c"])
     #expect(selection.anchor == nil)
+}
+
+// MARK: - RestoreOrder
+
+@Test func restoreDataBeforeApplication() {
+    let items = [
+        RestoreOrder.Item(name: "Lemmings", type: "appl", creator: "LEMM", size: 260_000),
+        RestoreOrder.Item(name: "LEMM_FUN", type: "levl", creator: "LEMM", size: 250_000),
+        RestoreOrder.Item(name: "MemoDB", type: "DATA", creator: "memo", size: 2_000),
+        RestoreOrder.Item(name: "BigData", type: "DATA", creator: "BIGD", size: 900_000),
+    ]
+    #expect(RestoreOrder.sorted(items).map(\.name) == ["BigData", "LEMM_FUN", "Lemmings", "MemoDB"])
+}
+
+@Test func restoreLargerFirstWithinCreator() {
+    let items = [
+        RestoreOrder.Item(name: "a", type: "DATA", creator: "X", size: 10),
+        RestoreOrder.Item(name: "b", type: "DATA", creator: "X", size: 30),
+        RestoreOrder.Item(name: "app", type: "appl", creator: "X", size: 99),
+    ]
+    #expect(RestoreOrder.sorted(items).map(\.name) == ["b", "a", "app"])
 }
