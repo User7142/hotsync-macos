@@ -201,6 +201,11 @@ enum L10n {
         let current = file.map { " – \($0)" } ?? ""
         return s("\(name): \(done) von \(total) Datei(en)\(current)", "\(name): \(done) of \(total) file(s)\(current)")
     }
+    static func phaseBackingUp(_ name: String, _ saved: Int, _ file: String?) -> String {
+        let current = file.map { " – \($0)" } ?? ""
+        return s("\(name): Sicherung, \(saved) Datenbank(en) geholt\(current)",
+                 "\(name): backup, \(saved) database(s) fetched\(current)")
+    }
     static func phaseSyncingNothing(_ name: String) -> String { s(
         "\(name) verbunden – nichts zu installieren", "\(name) connected – nothing to install"
     ) }
@@ -222,6 +227,13 @@ enum L10n {
             : s("\(time): \(installed) installiert, \(failed) nicht – siehe Warteschlange",
                 "\(time): \(installed) installed, \(failed) not – see the queue")
     }
+    static func resultBackup(_ saved: Int, _ failed: Int) -> String {
+        failed == 0
+            ? s("Gesichert: \(saved) Datenbank(en)", "Backed up: \(saved) database(s)")
+            : s("Gesichert: \(saved) Datenbank(en), \(failed) nicht lesbar – siehe Log",
+                "Backed up: \(saved) database(s), \(failed) unreadable – see the log")
+    }
+    static var showInFinder: String { s("Im Finder zeigen", "Show in Finder") }
     static func resultTimedOut(_ time: String) -> String { s(
         "\(time): Kein Palm hat sich gemeldet", "\(time): No Palm connected"
     ) }
@@ -407,6 +419,50 @@ enum L10n {
     ) }
     static func logAdopting(_ name: String) -> String { s(
         "Palm ohne Benutzer übernimmt das Profil „\(name)“", "Palm without a user takes the profile “\(name)”"
+    ) }
+    static func logBackupStarting(_ scope: TabStatus.BackupScope, _ path: String) -> String { s(
+        "Sicherung (\(backupScopeName(scope))) nach \(path) …", "Backup (\(backupScopeName(scope))) to \(path) …"
+    ) }
+    static func logBackedUp(_ name: String, _ bytes: Int) -> String { s(
+        "\(name) gesichert (\(bytes) Bytes)", "\(name) backed up (\(bytes) bytes)"
+    ) }
+    static func logBackupFailed(_ name: String, _ palmOSError: Int) -> String { s(
+        "\(name) NICHT gesichert (Palm-OS-Fehler \(palmOSError))",
+        "\(name) NOT backed up (Palm OS error \(palmOSError))"
+    ) }
+    static func logBackupFinished(_ saved: Int, _ failed: Int) -> String { s(
+        "Sicherung fertig: \(saved) gesichert, \(failed) nicht", "Backup done: \(saved) backed up, \(failed) not"
+    ) }
+    static var logBackupIncomplete: String { s(
+        "Sicherung abgebrochen – die bis dahin geholten Datenbanken liegen im Ordner",
+        "Backup cut short – the databases fetched so far are in the folder"
+    ) }
+    static func backupScopeName(_ scope: TabStatus.BackupScope) -> String {
+        switch scope {
+        case .ram: return s("RAM", "RAM")
+        case .rom: return s("ROM", "ROM")
+        case .all: return s("RAM und ROM", "RAM and ROM")
+        }
+    }
+    static var backupMenu: String { s("Sichern", "Back Up") }
+    static var backupMenuHelp: String { s(
+        "Beim nächsten HotSync dieses Palms Datenbanken auf den Mac holen (nach Backups/)",
+        "Fetch databases to the Mac at this Palm's next HotSync (into Backups/)"
+    ) }
+    static func backupMenuItem(_ scope: TabStatus.BackupScope) -> String {
+        switch scope {
+        case .ram: return s("Beim nächsten HotSync: RAM (Programme und Daten)",
+                            "At the next HotSync: RAM (applications and data)")
+        case .rom: return s("Beim nächsten HotSync: ROM (System, Treiber)",
+                            "At the next HotSync: ROM (system, drivers)")
+        case .all: return s("Beim nächsten HotSync: RAM und ROM", "At the next HotSync: RAM and ROM")
+        }
+    }
+    static var backupCancel: String { s("Keine Sicherung", "No backup") }
+    static var backupOpenFolder: String { s("Ordner Backups öffnen", "Open the Backups folder") }
+    static func backupPending(_ scope: TabStatus.BackupScope) -> String { s(
+        "Beim nächsten HotSync wird gesichert: \(backupScopeName(scope))",
+        "Backup at the next HotSync: \(backupScopeName(scope))"
     ) }
     static func logInstalling(_ name: String) -> String { s("Installiere \(name) …", "Installing \(name) …") }
     static func logFileInstalled(_ name: String) -> String { s("\(name) installiert", "\(name) installed") }

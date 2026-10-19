@@ -121,6 +121,22 @@ private func imageWithVersion(_ version: String?) -> Data {
             == .failed(file: "c.pdb", .notEnoughSpace))
 }
 
+@Test func backupEvents() {
+    #expect(SessionEvent.parse(#"{"event":"backupStarted","directory":"/tmp/b"}"#)
+            == .backupStarted(directory: "/tmp/b"))
+    #expect(SessionEvent.parse(#"{"event":"backingUp","file":"MSSlot.prc","list":"rom"}"#)
+            == .backingUp(file: "MSSlot.prc", rom: true))
+    #expect(SessionEvent.parse(#"{"event":"backingUp","file":"MemoDB.pdb","list":"ram"}"#)
+            == .backingUp(file: "MemoDB.pdb", rom: false))
+    #expect(SessionEvent.parse(#"{"event":"backedUp","file":"MemoDB.pdb","bytes":2048}"#)
+            == .backedUp(file: "MemoDB.pdb", bytes: 2048))
+    #expect(SessionEvent.parse(#"{"event":"backupFailed","file":"x.prc","reason":"palmError","error":-301,"palmOSError":5}"#)
+            == .backupFailed(file: "x.prc", palmOSError: 5))
+    #expect(SessionEvent.parse(#"{"event":"backupFinished","saved":120,"failed":2}"#)
+            == .backupFinished(saved: 120, failed: 2))
+    #expect(SessionEvent.parse(#"{"event":"backingUp"}"#) == nil)
+}
+
 @Test func brokenLines() {
     #expect(SessionEvent.parse("Thank you for using pilot-link.") == nil)
     #expect(SessionEvent.parse(#"{"event":"connected"}"#) == nil)

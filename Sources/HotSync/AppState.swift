@@ -304,6 +304,18 @@ final class AppState {
 
     func clearResult(_ tabId: UUID) {
         statuses[tabId]?.lastResult = nil
+        statuses[tabId]?.lastBackup = nil
+    }
+
+    // MARK: - Sicherung
+
+    /// Sicherungen, die beim nächsten HotSync eines Profils laufen (nach den
+    /// Installationen). Nur bis die Sicherung durch ist oder die App endet.
+    private(set) var backupRequests: [UUID: TabStatus.BackupScope] = [:]
+
+    /// nil: keine Sicherung (mehr)
+    func requestBackup(_ scope: TabStatus.BackupScope?, for profileId: UUID) {
+        backupRequests[profileId] = scope
     }
 
     /// Hinweise und Ablehnungen zu einem Palm, der jetzt zugeordnet ist.
@@ -521,6 +533,12 @@ final class AppState {
         var installed: Set<URL> = []
         var failed: [String: InstallFailure] = [:]
         var rejection: TabStatus.Rejection?
+        /// angefragte Sicherung: nach den Installationen
+        var backupScope: TabStatus.BackupScope?
+        var backupDirectory: URL?
+        var backupSaved = 0
+        var backupFailed = 0
+        var backupFinished = false
         var timedOut = false
         var errorMessage: String?
         var stopRequested = false
@@ -621,6 +639,28 @@ final class AppState {
             }
             fileDone(session)
 
+        case .backupStarted:
+            break
+
+        case .backingUp(let file, _):
+            if let tabId = session.tabId, let user = session.user {
+                statuses[tabId]?.phase = .backingUp(user: user, file: file, saved: session.backupSaved)
+            }
+
+        case .backedUp(let file, let bytes):
+            session.backupSaved += 1
+            if let tabId = session.tabId { tabLog(tabId, L10n.logBackedUp(file, bytes)) }
+
+        case .backupFailed(let file, let palmOSError):
+            session.backupFailed += 1
+            if let tabId = session.tabId { tabLog(tabId, L10n.logBackupFailed(file, palmOSError)) }
+
+        case .backupFinished(let saved, let failed):
+            session.backupFinished = true
+            if let profileId = session.profileId { backupRequests[profileId] = nil }
+            if let tabId = session.tabId { tabLog(tabId, L10n.logBackupFinished(saved, failed)) }
+            endSession(session)
+
         case .finished:
             break
 
@@ -705,13 +745,18 @@ final class AppState {
 
         let files = queue.pendingFiles
         session.files = files
+        if let scope = backupRequests[profileId], let profile = deviceManager.profile(profileId) {
+            session.backupScope = scope
+            session.backupDirectory = deviceManager.backupsDirectory(for: profile)
+                .appendingPathComponent(Self.backupFolderName(Date()))
+        }
         queue.beginInstall(files, session: session.token)
         statuses[tabId]?.phase = .syncing(user: user, file: nil, done: 0, total: files.count)
         statuses[tabId]?.lastResult = nil
         tabLog(tabId, L10n.logPalmConnected(user.name, user.userId, files.count))
 
         if files.isEmpty {
-            endSession(session)
+            installsDone(session)
         } else {
             for file in files {
                 session.runner.send("install \(file.path)")
@@ -726,8 +771,28 @@ final class AppState {
                                                total: session.files.count)
         }
         if session.results == session.files.count {
-            endSession(session)
+            installsDone(session)
         }
+    }
+
+    /// Alle Dateien sind durch: noch sichern, falls angefragt, sonst Ende.
+    private func installsDone(_ session: Session) {
+        guard let scope = session.backupScope, let directory = session.backupDirectory,
+              let tabId = session.tabId, let user = session.user else {
+            endSession(session)
+            return
+        }
+        statuses[tabId]?.phase = .backingUp(user: user, file: nil, saved: 0)
+        tabLog(tabId, L10n.logBackupStarting(scope, directory.path))
+        session.runner.send("backup \(scope.rawValue) \(directory.path)")
+    }
+
+    /// Ordner einer Sicherung: Datum und Uhrzeit, sortiert sich von selbst
+    private static func backupFolderName(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        return f.string(from: date)
     }
 
     /// Alle Dateien sind durch: Eintrag ins HotSync-Log des Palms, Ende.
@@ -812,6 +877,13 @@ final class AppState {
             statuses[tabId]?.phase = .idle
             if let result {
                 statuses[tabId]?.lastResult = result
+            }
+            // auch eine abgebrochene Sicherung zeigt, was schon da ist
+            if let directory = session.backupDirectory, session.backupSaved + session.backupFailed > 0 {
+                statuses[tabId]?.lastBackup = TabStatus.Backup(saved: session.backupSaved,
+                                                               failed: session.backupFailed,
+                                                               directory: directory)
+                if !session.backupFinished { tabLog(tabId, L10n.logBackupIncomplete) }
             }
         }
         if case .listener = session.purpose {

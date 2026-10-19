@@ -19,12 +19,17 @@
  *             install <Pfad>   Datei installieren
  *             setuser <ID> <Name>  Palm ohne Benutzer übernimmt ein Profil
  *             log <Text>       Eintrag ins HotSync-Log des Palms
+ *             backup <ram|rom|all> <Ordner>
+ *                              Datenbanken vom Palm holen: die aus dem RAM
+ *                              nach <Ordner>/RAM, die aus dem ROM nach
+ *                              <Ordner>/ROM (je eine .prc/.pdb)
  *             end              Sitzung sauber beenden
  *
  * Exit:     0 Sitzung beendet, 1 Fehler, 2 kein Palm innerhalb des Timeouts
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -244,6 +249,150 @@ static void install_file(int sd, const char *path)
 	pi_file_close(pf);
 }
 
+/* ---- Sicherung ---------------------------------------------------------- */
+
+/* Dateiname aus dem Datenbanknamen: '/' und Steuerzeichen gehen in keinen
+ * Dateinamen, '=' maskiert (wie pilot-xfer: "=2F" für '/'). Palm-Text ist
+ * Windows-1252, der Dateiname UTF-8 wie in der JSON-Ausgabe. */
+static void file_name_for(char *out, size_t size, const struct DBInfo *info)
+{
+	const unsigned char *p = (const unsigned char *)info->name;
+	size_t n = 0;
+
+	for (; *p && n + 8 < size; p++) {
+		unsigned int c = *p;
+
+		if (c == '/' || c == '=' || c < 0x20 || c == 0x7F) {
+			n += snprintf(out + n, size - n, "=%02X", c);
+		} else if (c >= 0x80) {
+			unsigned int cp = c < 0xA0 ? cp1252_high[c - 0x80] : c;
+
+			if (cp < 0x800) {
+				out[n++] = (char)(0xC0 | (cp >> 6));
+				out[n++] = (char)(0x80 | (cp & 0x3F));
+			} else {
+				out[n++] = (char)(0xE0 | (cp >> 12));
+				out[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+				out[n++] = (char)(0x80 | (cp & 0x3F));
+			}
+		} else {
+			out[n++] = (char)c;
+		}
+	}
+	out[n] = '\0';
+	strncat(out, (info->flags & dlpDBFlagResource) ? ".prc" : ".pdb", size - strlen(out) - 1);
+}
+
+/* Holt alle Datenbanken einer Liste (RAM oder ROM) nach dir. Meldet jede
+ * Datenbank ("backingUp", dann "backedUp" oder "backupFailed"); zählt mit. */
+static int backup_list(int sd, int rom, const char *dir, int *saved, int *failed)
+{
+	pi_buffer_t *buffer = pi_buffer_new(sizeof(struct DBInfo));
+	int index = 0;
+
+	if (buffer == NULL)
+		return -1;
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+		emit_error("backup", "cannot create %s (%s)", dir, strerror(errno));
+		pi_buffer_free(buffer);
+		return -1;
+	}
+
+	for (;;) {
+		struct DBInfo info;
+		char name[256], path[PATH_MAX];
+		struct stat sbuf;
+		pi_file_t *pf;
+
+		if (!pi_socket_connected(sd)) {
+			emit_error("backup", "the Palm does not answer any more");
+			pi_buffer_free(buffer);
+			return -1;
+		}
+		/* Ende der Liste: der Palm meldet "nicht gefunden" */
+		if (dlp_ReadDBList(sd, 0, rom ? dlpDBListROM : dlpDBListRAM, index, buffer) < 0)
+			break;
+		memcpy(&info, buffer->data, sizeof(struct DBInfo));
+		index = info.index + 1;
+
+		file_name_for(name, sizeof(name), &info);
+		snprintf(path, sizeof(path), "%s/%s", dir, name);
+
+		emit_begin("backingUp");
+		emit_str("file", name, 0);
+		emit_str("list", rom ? "rom" : "ram", 0);
+		emit_end();
+
+		/* geöffnet und schreibgeschützt gehören nicht in die Datei */
+		info.flags &= ~(dlpDBFlagOpen | dlpDBFlagReadOnly);
+		pf = pi_file_create(path, &info);
+		if (pf == NULL) {
+			emit_begin("backupFailed");
+			emit_str("file", name, 0);
+			emit_str("reason", "unwritableFile", 0);
+			emit_end();
+			(*failed)++;
+			continue;
+		}
+		if (pi_file_retrieve(pf, sd, 0, install_progress) < 0) {
+			emit_begin("backupFailed");
+			emit_str("file", name, 0);
+			emit_str("reason", "palmError", 0);
+			emit_int("error", pi_error(sd));
+			emit_int("palmOSError", pi_palmos_error(sd));
+			emit_end();
+			pi_file_close(pf);
+			unlink(path);
+			(*failed)++;
+			continue;
+		}
+		pi_file_close(pf);	/* schreibt die Datei */
+		emit_begin("backedUp");
+		emit_str("file", name, 0);
+		emit_int("bytes", stat(path, &sbuf) == 0 ? (long)sbuf.st_size : 0);
+		emit_end();
+		(*saved)++;
+	}
+	pi_buffer_free(buffer);
+	return 0;
+}
+
+/* "backup <ram|rom|all> <Ordner>": Datenbanken vom Palm holen. */
+static void backup(int sd, const char *args)
+{
+	const char *space = strchr(args, ' ');
+	char dir[PATH_MAX];
+	int ram, rom, saved = 0, failed = 0;
+	size_t scope = space ? (size_t)(space - args) : 0;
+
+	ram = (scope == 3 && strncmp(args, "ram", 3) == 0) || (scope == 3 && strncmp(args, "all", 3) == 0);
+	rom = (scope == 3 && strncmp(args, "rom", 3) == 0) || (scope == 3 && strncmp(args, "all", 3) == 0);
+	if (!space || !space[1] || (!ram && !rom)) {
+		emit_error("backup", "usage: backup <ram|rom|all> <directory>");
+		return;
+	}
+	if (mkdir(space + 1, 0755) != 0 && errno != EEXIST) {
+		emit_error("backup", "cannot create %s (%s)", space + 1, strerror(errno));
+		return;
+	}
+
+	emit_begin("backupStarted");
+	emit_str("directory", space + 1, 0);
+	emit_end();
+
+	snprintf(dir, sizeof(dir), "%s/RAM", space + 1);
+	if (ram)
+		backup_list(sd, 0, dir, &saved, &failed);
+	snprintf(dir, sizeof(dir), "%s/ROM", space + 1);
+	if (rom && pi_socket_connected(sd))
+		backup_list(sd, 1, dir, &saved, &failed);
+
+	emit_begin("backupFinished");
+	emit_int("saved", saved);
+	emit_int("failed", failed);
+	emit_end();
+}
+
 /* ---- Sitzung ------------------------------------------------------------ */
 
 static int connect_palm(const char *port, int timeout)
@@ -394,6 +543,8 @@ static void run_commands(int sd)
 
 		if (strncmp(line, "install ", 8) == 0) {
 			install_file(sd, line + 8);
+		} else if (strncmp(line, "backup ", 7) == 0) {
+			backup(sd, line + 7);
 		} else if (strncmp(line, "setuser ", 8) == 0) {
 			write_user(sd, line + 8);
 		} else if (strncmp(line, "log ", 4) == 0) {

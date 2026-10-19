@@ -13,6 +13,24 @@ final class TabStatus {
         case waitingForPort
         case listening(since: Date)
         case syncing(user: PalmUser, file: String?, done: Int, total: Int)
+        /// nach den Installationen: Datenbanken werden vom Palm geholt
+        case backingUp(user: PalmUser, file: String?, saved: Int)
+    }
+
+    /// Was beim nächsten HotSync gesichert wird (Datenbanken vom Palm holen)
+    enum BackupScope: String, CaseIterable {
+        /// die Datenbanken im RAM: Programme und Daten des Benutzers
+        case ram
+        /// die Datenbanken im ROM: Betriebssystem, Treiber, Sony-Programme
+        case rom
+        case all
+    }
+
+    /// Ergebnis der letzten Sicherung
+    struct Backup: Equatable {
+        let saved: Int
+        let failed: Int
+        let directory: URL
     }
 
     enum Result: Equatable {
@@ -34,6 +52,7 @@ final class TabStatus {
 
     var phase: Phase = .idle
     var lastResult: Result?
+    var lastBackup: Backup?
     let log = LiveLog(capacity: 200)
 
     var isBusy: Bool {
@@ -42,8 +61,10 @@ final class TabStatus {
     }
 
     var isSyncing: Bool {
-        if case .syncing = phase { return true }
-        return false
+        switch phase {
+        case .syncing, .backingUp: return true
+        default: return false
+        }
     }
 }
 

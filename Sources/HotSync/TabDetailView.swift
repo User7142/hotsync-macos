@@ -13,7 +13,7 @@ struct TabDetailView: View {
         VStack(spacing: 12) {
             header
             if let status = appState.status(tab.id) {
-                if status.isSyncing || status.lastResult != nil {
+                if status.isSyncing || status.lastResult != nil || status.lastBackup != nil {
                     resultBox(status)
                 }
             }
@@ -54,9 +54,33 @@ struct TabDetailView: View {
                 Text(portText)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+                if let scope = appState.backupRequests[tab.profileId] {
+                    Label(L10n.backupPending(scope), systemImage: "externaldrive.badge.timemachine")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
             }
 
             Spacer()
+
+            Menu {
+                ForEach(TabStatus.BackupScope.allCases, id: \.self) { scope in
+                    Button(L10n.backupMenuItem(scope)) {
+                        appState.requestBackup(scope, for: tab.profileId)
+                    }
+                }
+                if appState.backupRequests[tab.profileId] != nil {
+                    Divider()
+                    Button(L10n.backupCancel) { appState.requestBackup(nil, for: tab.profileId) }
+                }
+                Divider()
+                Button(L10n.backupOpenFolder) { openBackupsFolder() }
+            } label: {
+                Image(systemName: "externaldrive.badge.timemachine")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(L10n.backupMenuHelp)
 
             Button(action: onEdit) {
                 Image(systemName: "slider.horizontal.3")
@@ -88,9 +112,16 @@ struct TabDetailView: View {
         appState.status(tab.id)?.phase ?? .idle
     }
 
+    private func openBackupsFolder() {
+        guard let profile = appState.deviceManager.profile(tab.profileId) else { return }
+        let dir = appState.deviceManager.backupsDirectory(for: profile)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(dir)
+    }
+
     private var phaseColor: Color {
         switch phase {
-        case .syncing: return .blue
+        case .syncing, .backingUp: return .blue
         case .listening: return .green
         case .waitingForPort: return .orange
         case .idle: return .gray
@@ -100,6 +131,7 @@ struct TabDetailView: View {
     private var phaseIcon: String {
         switch phase {
         case .syncing: return "arrow.triangle.2.circlepath"
+        case .backingUp: return "externaldrive.badge.timemachine"
         case .listening: return "antenna.radiowaves.left.and.right"
         case .waitingForPort: return "hourglass"
         case .idle: return "power.circle"
@@ -111,6 +143,8 @@ struct TabDetailView: View {
         case .syncing(let user, let file, let done, let total):
             if total == 0 { return L10n.phaseSyncingNothing(user.name) }
             return L10n.phaseSyncing(user.name, done, total, file)
+        case .backingUp(let user, let file, let saved):
+            return L10n.phaseBackingUp(user.name, saved, file)
         case .listening:
             return appState.isStarted(tab.id) ? L10n.phaseListeningTargeted : L10n.phaseListeningAuto
         case .waitingForPort:
@@ -152,17 +186,41 @@ struct TabDetailView: View {
                     .tint(.blue)
                     .padding(4)
             }
-        } else if let result = status.lastResult {
+        } else if case .backingUp = status.phase {
+            GroupBox {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(.blue)
+                    .padding(4)
+            }
+        } else if status.lastResult != nil || status.lastBackup != nil {
             GroupBox {
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: resultIcon(result))
-                        .foregroundStyle(resultColor(result))
+                    if let result = status.lastResult {
+                        Image(systemName: resultIcon(result))
+                            .foregroundStyle(resultColor(result))
+                    } else {
+                        Image(systemName: "externaldrive.badge.timemachine")
+                            .foregroundStyle(.blue)
+                    }
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(resultText(result))
-                            .font(.callout)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if case .rejected(_, let rejection) = result {
-                            rejectionActions(rejection)
+                        if let result = status.lastResult {
+                            Text(resultText(result))
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if case .rejected(_, let rejection) = result {
+                                rejectionActions(rejection)
+                            }
+                        }
+                        if let backup = status.lastBackup {
+                            HStack(spacing: 8) {
+                                Text(L10n.resultBackup(backup.saved, backup.failed))
+                                    .font(.callout)
+                                Button(L10n.showInFinder) {
+                                    NSWorkspace.shared.activateFileViewerSelecting([backup.directory])
+                                }
+                                .controlSize(.small)
+                            }
                         }
                     }
                     Spacer()

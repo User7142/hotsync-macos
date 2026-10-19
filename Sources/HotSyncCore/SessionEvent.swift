@@ -27,6 +27,13 @@ public enum SessionEvent: Equatable, Sendable {
     case installed(file: String, bytes: Int)
     case failed(file: String, InstallFailure)
     case userWritten(PalmUser)
+    /// backup: databases are being fetched into this directory
+    case backupStarted(directory: String)
+    /// one database (file name as saved) from the RAM or the ROM list
+    case backingUp(file: String, rom: Bool)
+    case backedUp(file: String, bytes: Int)
+    case backupFailed(file: String, palmOSError: Int)
+    case backupFinished(saved: Int, failed: Int)
     case finished
     case error(stage: String, message: String)
 
@@ -42,6 +49,10 @@ public enum SessionEvent: Equatable, Sendable {
         let palmOSError: Int?
         let stage: String?
         let message: String?
+        let directory: String?
+        let list: String?
+        let saved: Int?
+        let failed: Int?
     }
 
     /// Reads one output line; nil for anything that is not a known event
@@ -73,6 +84,19 @@ public enum SessionEvent: Equatable, Sendable {
         case "userWritten":
             guard let name = l.user, let userId = l.userId else { return nil }
             return .userWritten(PalmUser(name: name, userId: userId))
+        case "backupStarted":
+            return .backupStarted(directory: l.directory ?? "")
+        case "backingUp":
+            guard let file = l.file else { return nil }
+            return .backingUp(file: file, rom: l.list == "rom")
+        case "backedUp":
+            guard let file = l.file else { return nil }
+            return .backedUp(file: file, bytes: l.bytes ?? 0)
+        case "backupFailed":
+            guard let file = l.file else { return nil }
+            return .backupFailed(file: file, palmOSError: l.palmOSError ?? 0)
+        case "backupFinished":
+            return .backupFinished(saved: l.saved ?? 0, failed: l.failed ?? 0)
         case "finished":
             return .finished
         case "error":
