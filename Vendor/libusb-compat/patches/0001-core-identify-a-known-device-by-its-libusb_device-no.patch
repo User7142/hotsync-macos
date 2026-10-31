@@ -1,0 +1,49 @@
+From 339dcf9e9d5ee6eda97a44dc686014f0779d2d14 Mon Sep 17 00:00:00 2001
+From: Anthony Leto <anthony@as393941.com>
+Date: Fri, 30 Oct 2026 17:50:49 -0700
+Subject: [PATCH] core: identify a known device by its libusb_device, not its
+ address alone
+
+usb_find_devices() treated any device on a bus with a known address as
+the device already in the list. A device that re-enumerates between two
+scans usually gets the same address back, and libusb-1.0 then hands out
+a new libusb_device for it; the old entry kept pointing at the detached
+object, so every later usb_open() failed with LIBUSB_ERROR_NO_DEVICE
+until the process exited.
+
+Seen with pilot-link polling a Palm handheld on macOS: the handheld
+re-enumerates when HotSync is tapped, and the listener was stuck on
+"could not open device, error -4" for the rest of its life.
+
+Require the same libusb_device as well as the same address before
+treating an entry as unchanged. On platforms where libusb-1.0 keeps one
+object per attached device this changes nothing.
+---
+ libusb/core.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/libusb/core.c b/libusb/core.c
+index 9b1527b..5cdf857 100644
+--- a/libusb/core.c
++++ b/libusb/core.c
+@@ -656,7 +656,16 @@ API_EXPORTED int usb_find_devices(void)
+ 			struct usb_device *ndev = new_devices;
+ 
+ 			while (ndev) {
+-				if (ndev->devnum == dev->devnum) {
++				/* The address alone does not identify a device. One that
++				 * re-enumerates between two scans (a Palm handheld switching
++				 * modes, or recovering from a stall) usually gets its old
++				 * address back, and libusb-1.0 then hands out a new
++				 * libusb_device for it. Keeping our old entry would leave
++				 * callers with a device that can never be opened again
++				 * (LIBUSB_ERROR_NO_DEVICE), so only a match on the underlying
++				 * libusb_device counts as the same device; otherwise the old
++				 * one is reported removed and the new one added. */
++				if (ndev->devnum == dev->devnum && ndev->dev == dev->dev) {
+ 					LIST_DEL(new_devices, ndev);
+ 					free(ndev);
+ 					found = 1;
+-- 
+2.53.0
+
