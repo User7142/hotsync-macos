@@ -14,6 +14,9 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 WORK_DIR="$PROJECT_DIR/.build/libusb"
 PREFIX="$WORK_DIR/install"
 STAMP="$PREFIX/.stamp"
+# Architekturen: universell (Apple Silicon und Intel), sonst ARCHS="arm64"
+ARCHS="${ARCHS:-arm64 x86_64}"
+ARCH_FLAGS="$(printf -- '-arch %s ' $ARCHS)"
 
 # "Commit + Prüfsumme der Patches" eines Vendor-Pakets
 wanted() {
@@ -25,7 +28,7 @@ wanted() {
     echo "$(tr -d '[:space:]' < "$vendor/COMMIT") $(cat /dev/null ${patches[@]+"${patches[@]}"} | shasum -a 256 | cut -d' ' -f1)"
 }
 
-WANTED="libusb $(wanted libusb) libusb-compat $(wanted libusb-compat)"
+WANTED="libusb $(wanted libusb) libusb-compat $(wanted libusb-compat) archs $ARCHS"
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WANTED" ]; then
     echo "      libusb aktuell"
     exit 0
@@ -59,7 +62,8 @@ SRC="$(checkout libusb https://github.com/libusb/libusb.git)"
 (
     cd "$SRC"
     NOCONFIGURE=1 ./autogen.sh > "$WORK_DIR/libusb-autogen.log" 2>&1
-    ./configure --prefix="$PREFIX" --disable-static > "$WORK_DIR/libusb-configure.log" 2>&1
+    CFLAGS="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS" \
+        ./configure --prefix="$PREFIX" --disable-static > "$WORK_DIR/libusb-configure.log" 2>&1
     make -j"$(sysctl -n hw.ncpu)" > "$WORK_DIR/libusb-make.log" 2>&1
     make install > "$WORK_DIR/libusb-install.log" 2>&1
 )
@@ -68,7 +72,7 @@ SRC="$(checkout libusb-compat https://github.com/libusb/libusb-compat-0.1.git)"
 (
     cd "$SRC"
     NOCONFIGURE=1 ./autogen.sh > "$WORK_DIR/compat-autogen.log" 2>&1
-    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" \
+    PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" CFLAGS="$ARCH_FLAGS" LDFLAGS="$ARCH_FLAGS" \
         ./configure --prefix="$PREFIX" --disable-static > "$WORK_DIR/compat-configure.log" 2>&1
     make -j"$(sysctl -n hw.ncpu)" > "$WORK_DIR/compat-make.log" 2>&1
     make install > "$WORK_DIR/compat-install.log" 2>&1

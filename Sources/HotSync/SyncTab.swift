@@ -14,12 +14,23 @@ struct SyncTab: Codable, Identifiable, Equatable {
     /// Lauscht von selbst, sobald der Anschluss frei ist - wie HotSync bis
     /// 1.0.x. Ohne: nur per Start-Knopf oder als Schritt einer Kette.
     var autoListen: Bool
-    /// Vollständiger HotSync: nach den Installationen die Datenbanken im RAM
-    /// sichern. false: nur installieren (z. B. für einen langsamen seriellen
-    /// Tab). nil: vollständig - so wie Tabs von vor dieser Einstellung.
+    /// Von vor der Betriebsart: true/nil "Installieren + Sichern", false
+    /// "Nur installieren". Bleibt in tabs.json für ältere Versionen.
     var fullSync: Bool?
+    /// Was ein HotSync dieses Tabs tut; nil: wie `fullSync` sagt - ein Tab
+    /// aus einer Version ohne PIM-Abgleich bleibt bei Installieren und
+    /// Sichern, der Abgleich kommt erst, wenn man ihn wählt
+    var mode: HotSyncMode?
 
-    var isFullSync: Bool { fullSync ?? true }
+    var hotSyncMode: HotSyncMode {
+        get { mode ?? (fullSync == false ? .installOnly : .installBackup) }
+        set {
+            mode = newValue
+            fullSync = newValue.backsUp
+        }
+    }
+
+    var isFullSync: Bool { hotSyncMode.backsUp }
 
     init(id: UUID = UUID(), profileId: UUID, port: String, baudRate: Int = SyncTab.defaultBaudRate,
          autoListen: Bool) {
@@ -36,12 +47,54 @@ struct SyncTab: Codable, Identifiable, Equatable {
     static let defaultBaudRate = 57600
     static let baudRates = [9600, 19200, 38400, 57600, 115200]
 
-    var isUSB: Bool { port == Self.usbPort }
-
-    /// Kurzname des Anschlusses für Tab-Titel: "USB", "cu.usbserial-A1".
-    var portLabel: String {
-        isUSB ? "USB" : (port as NSString).lastPathComponent
+    /// Netzwerk-HotSync: libpisock lauscht auf TCP 14238 (NetSync), der Palm
+    /// verbindet sich über WLAN mit der Adresse des "primären PCs". Der
+    /// Anschluss nennt die Schnittstelle ("net:en1"); ihre Adresse wird beim
+    /// Start nachgeschlagen, weil DHCP sie ändern kann. "net:any" lauscht
+    /// auf allen - Ethernet und VPN eingeschlossen, darum nicht die Vorgabe.
+    static let networkPrefix = "net:"
+    static let networkAll = "any"
+    static let networkPort = networkPrefix + networkAll
+    static func networkPort(interface: String) -> String { networkPrefix + interface }
+    static func isNetworkPort(_ port: String) -> Bool { port.hasPrefix(networkPrefix) }
+    /// "en1", or "any"
+    static func networkInterface(of port: String) -> String? {
+        isNetworkPort(port) ? String(port.dropFirst(networkPrefix.count)) : nil
     }
+
+    var isUSB: Bool { port == Self.usbPort }
+    var isNetwork: Bool { Self.isNetworkPort(port) }
+    var isSerial: Bool { !isUSB && !isNetwork }
+    var networkInterface: String? { Self.networkInterface(of: port) }
+
+    /// Kurzname des Anschlusses für Tab-Titel: "USB", "Wi-Fi", "cu.usbserial-A1".
+    var portLabel: String {
+        Self.label(port)
+    }
+
+    static func label(_ port: String) -> String {
+        if port == usbPort { return "USB" }
+        if let interface = networkInterface(of: port) {
+            if interface == networkAll { return "Network" }
+            return interface == LocalAddress.wifiInterface ? "Wi-Fi" : "Network (\(interface))"
+        }
+        return (port as NSString).lastPathComponent
+    }
+}
+
+/// Die Betriebsart eines Tabs: welche Schritte ein HotSync macht.
+/// "Abgleichen" ist der PIM-Abgleich (Kalender, Kontakte), wie im Profil
+/// eingestellt; "Installieren" die Warteschlange; "Sichern" die Sicherung.
+enum HotSyncMode: String, Codable, CaseIterable, Equatable {
+    // in der Reihenfolge des Menüs
+    case syncInstallBackup
+    case installBackup
+    case installOnly
+    case syncOnly
+
+    var syncs: Bool { self == .syncInstallBackup || self == .syncOnly }
+    var installs: Bool { self != .syncOnly }
+    var backsUp: Bool { self == .syncInstallBackup || self == .installBackup }
 }
 
 /// Eine Kette: Tabs, die nacheinander syncen - "wenn A fertig ist, B, dann C".

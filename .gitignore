@@ -3,3 +3,6 @@
 HotSync.app/
 *.prc
 *.pdb
+!Tests/*/Fixtures/*.pdb
+!Tests/*/Fixtures/device/*.pdb
+.signing-identity

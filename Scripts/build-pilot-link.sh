@@ -21,6 +21,10 @@ PREFIX="$WORK_DIR/install"
 STAMP="$PREFIX/.stamp"
 REPO="https://github.com/desrod/pilot-link.git"
 LIBUSB_PREFIX="$PROJECT_DIR/.build/libusb/install"
+# Architekturen: universell (Apple Silicon und Intel), sonst ARCHS="arm64"
+ARCHS="${ARCHS:-arm64 x86_64}"
+ARCH_FLAGS="$(printf -- '-arch %s ' $ARCHS)"
+export ARCHS
 
 "$SCRIPT_DIR/build-libusb.sh"
 
@@ -30,7 +34,7 @@ PATCHES=("$VENDOR_DIR"/patches/*.patch)
 shopt -u nullglob
 # ${PATCHES[@]+...}: ein leeres Array ist unter "set -u" in Bash 3.2 sonst ein Fehler
 # mit dem Stand von libusb: ändert der sich, wird libpisock neu dagegen gebaut
-WANTED="$COMMIT $(cat /dev/null ${PATCHES[@]+"${PATCHES[@]}"} | shasum -a 256 | cut -d' ' -f1) $(cat "$LIBUSB_PREFIX/.stamp")"
+WANTED="$COMMIT $(cat /dev/null ${PATCHES[@]+"${PATCHES[@]}"} | shasum -a 256 | cut -d' ' -f1) $(cat "$LIBUSB_PREFIX/.stamp") archs $ARCHS"
 
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WANTED" ]; then
     echo "      pilot-link aktuell ($COMMIT + ${#PATCHES[@]} Patches)"
@@ -58,7 +62,7 @@ rm -rf "$PREFIX"
     NOCONFIGURE=1 sh ./autogen.sh > "$WORK_DIR/autogen.log" 2>&1
     # unser libusb vor Homebrews (das liefert nur noch popt)
     PKG_CONFIG_PATH="$LIBUSB_PREFIX/lib/pkgconfig" \
-    CPPFLAGS="-I$LIBUSB_PREFIX/include -I$BREW/include" LDFLAGS="-L$LIBUSB_PREFIX/lib -L$BREW/lib" \
+    CFLAGS="$ARCH_FLAGS" CPPFLAGS="-I$LIBUSB_PREFIX/include -I$BREW/include" LDFLAGS="$ARCH_FLAGS -L$LIBUSB_PREFIX/lib -L$BREW/lib" \
         ./configure --prefix="$PREFIX" --enable-libusb > "$WORK_DIR/configure.log" 2>&1
     make -j"$(sysctl -n hw.ncpu)" -C libpisock > "$WORK_DIR/make.log" 2>&1
     make -C libpisock install > "$WORK_DIR/install.log" 2>&1

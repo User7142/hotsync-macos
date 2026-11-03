@@ -27,9 +27,13 @@ final class SessionRunner {
     private let errors = Pipe()
 
     /// - Parameter timeout: Sekunden bis "kein Palm", 0 = bis gestoppt
-    init(port: String, baudRate: Int, timeout: Int) {
+    /// - Parameters:
+    ///   - port: der Anschluss des Tabs, Schlüssel der Sitzung
+    ///   - toolPort: was das Werkzeug bekommt (für "net:en1" die Adresse der
+    ///     Schnittstelle, "net:192.168.0.5"); sonst derselbe
+    init(port: String, toolPort: String? = nil, baudRate: Int, timeout: Int) {
         self.port = port
-        process.arguments = ["--port", port, "--timeout", String(timeout)]
+        process.arguments = ["--port", toolPort ?? port, "--timeout", String(timeout)]
         var environment = ProcessInfo.processInfo.environment
         // pilot-link liest die serielle Baudrate aus PILOTRATE
         environment["PILOTRATE"] = String(baudRate)
@@ -76,7 +80,9 @@ final class SessionRunner {
 
     /// Eine Anweisung an das Werkzeug (siehe hotsync-session.c).
     func send(_ command: String) {
-        guard process.isRunning, let data = (command + "\n").data(using: .utf8) else { return }
+        // eine Anweisung ist eine Zeile; Text vom Palm (Benutzername) darf keine zweite anfangen
+        let line = command.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+        guard process.isRunning, let data = (line + "\n").data(using: .utf8) else { return }
         do {
             try input.fileHandleForWriting.write(contentsOf: data)
         } catch {

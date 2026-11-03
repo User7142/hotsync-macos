@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 import HotSyncCore
 import Observation
+import PalmSync
+import PalmSyncMac
 
 /// Steuert alle Sitzungen: welche Tabs an welchem Anschluss lauschen, welcher
 /// Palm zu welchem Tab gehört, und den Ablauf der Ketten.
@@ -18,6 +20,10 @@ import Observation
 final class AppState {
     let deviceManager = DeviceManager()
     let tabStore = TabStore()
+    /// Calendar.app und Contacts.app für den Abgleich; je eine Instanz, sie halten die Freigabe
+    let calendarSource = CalendarSource()
+    let contactSource = ContactSource()
+    let reminderSource = ReminderSource()
     let portMonitor = PortMonitor()
 
     private(set) var queues: [UUID: InstallQueue] = [:]
@@ -25,6 +31,18 @@ final class AppState {
     private(set) var notices: [PortNotice] = []
     /// Der offene Dialog "Neuer Palm" (höchstens einer zur Zeit)
     var newPalmPrompt: NewPalmPrompt?
+    /// Konflikte, die der Benutzer entscheidet, während der Palm wartet
+    var conflictPrompt: ConflictPrompt?
+    @ObservationIgnored private var conflictAnswer: (([ConflictPolicy]?) -> Void)?
+
+    /// Die Antwort aus dem Konflikt-Dialog: eine Wahl je Konflikt, nil = diesen
+    /// Abgleich auslassen.
+    func answerConflicts(_ choices: [ConflictPolicy]?) {
+        let answer = conflictAnswer
+        conflictAnswer = nil
+        conflictPrompt = nil
+        answer?(choices)
+    }
     /// Holt das Fenster nach vorn, wenn HotSync etwas fragen muss
     @ObservationIgnored var onAttentionNeeded: (() -> Void)?
     private(set) var activeChain: ActiveChain?
@@ -53,6 +71,10 @@ final class AppState {
     /// Startet das Werkzeug an einem Anschluss gar nicht erst (z. B. serieller
     /// Port belegt), nicht im Sekundentakt neu versuchen.
     private static let errorRetryDelay: TimeInterval = 10
+    /// Ein Listener ohne Palm bekommt nach dieser Zeit ein frisches Werkzeug:
+    /// ein lange laufender Prozess sieht nach Ruhezustand oder USB-Umbau
+    /// den Palm sonst nicht mehr (libusb hält eine Geräteliste im Cache).
+    static let listenerRefresh = 600
 
     @ObservationIgnored private var watchers: [UUID: FileWatcher] = [:]
     @ObservationIgnored private var sessions: [String: Session] = [:]
@@ -80,6 +102,32 @@ final class AppState {
         portMonitor.onChange = { [weak self] in self?.scheduleAll() }
         portMonitor.start()
         scheduleAll()
+
+        // Netzwerkschnittstellen kommen und gehen, ohne dass es jemand meldet:
+        // jede Minute nachsehen, ob ein Anschluss ohne Sitzung jetzt einen hat
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.scheduleAll() }
+        }
+
+        // Ruhezustand: Listener ohne Palm davor beenden, danach frisch starten.
+        // Ein Werkzeug, das den Ruhezustand überlebt, sieht den Palm nicht mehr.
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.stopIdleListeners() }
+            }
+        }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                // beenden genügt: nach dem Ende wird der Anschluss neu vergeben,
+                // und ein Listener, der schon weg ist, kommt über scheduleAll
+                Task { @MainActor in
+                    guard let self else { return }
+                    DebugLog.shared.log(L10n.logWakeRestart, source: "Session")
+                    self.restartIdleListeners()
+                }
+            }
+        }
     }
 
     /// Beim Beenden: kein hotsync-session darf weiterlaufen.
@@ -330,15 +378,15 @@ final class AppState {
         if restore { restoreRequests.insert(profileId) } else { restoreRequests.remove(profileId) }
     }
 
-    func setFullSync(_ enabled: Bool, for tabId: UUID) {
-        guard var tab = tabStore.tab(tabId), tab.isFullSync != enabled else { return }
-        tab.fullSync = enabled
+    func setMode(_ mode: HotSyncMode, for tabId: UUID) {
+        guard var tab = tabStore.tab(tabId), tab.hotSyncMode != mode else { return }
+        tab.hotSyncMode = mode
         saveTab(tab)
     }
 
-    func setFullSyncForAllTabs(_ enabled: Bool) {
-        for var tab in tabStore.tabs where tab.isFullSync != enabled {
-            tab.fullSync = enabled
+    func setModeForAllTabs(_ mode: HotSyncMode) {
+        for var tab in tabStore.tabs where tab.hotSyncMode != mode {
+            tab.hotSyncMode = mode
             tabStore.save(tab)
         }
     }
@@ -510,13 +558,18 @@ final class AppState {
     /// Listener ohne Palm neu starten, damit geänderte Tabs (Anschluss,
     /// Baudrate, automatisch lauschen) gelten.
     private func restartIdleListeners() {
+        stopIdleListeners()
+        scheduleAll()
+    }
+
+    /// Listener ohne Palm beenden; der Anschluss wird nach ihrem Ende neu vergeben.
+    private func stopIdleListeners() {
         for session in sessions.values {
             if case .listener = session.purpose, !session.connected {
                 session.stopRequested = true
                 session.runner.kill()
             }
         }
-        scheduleAll()
     }
 
     private func scheduleAll() {
@@ -588,8 +641,44 @@ final class AppState {
         var rejection: TabStatus.Rejection?
         /// Ablauf einer angenommenen Sitzung: zurückspielen (falls angefragt),
         /// die Warteschlange installieren, sichern (falls eingeschaltet)
-        enum Stage { case restoring, installing, backingUp, dumpingROM }
+        enum Stage { case restoring, installing, backingUp, readingCalendar, twoWayCalendar, fixingLocations, dumpingROM }
         var stage: Stage = .installing
+        /// nach der Sicherung: diese Datenbanken vom Palm lesen und prüfen
+        var checkDatabases: [String] = []
+        var checking: String?
+        var calendarAppInfo: Data?
+        var calendarRecords: [PalmRecordIn] = []
+        /// danach: die Ortsdatenbanken mit der tzdata des Macs abgleichen
+        var fixDatabases: [String] = []
+        var fixing: String?
+        var fixChanged = 0
+        var fixTotal = 0
+        var fixUnknown = 0
+        /// die korrigierte Datenbank, die nach dem Schließen installiert wird
+        var fixInstall: URL?
+        /// die Zonennamen des Palms (locLTimeZoneDB), für die Reihenfolge
+        var zoneTable = PalmZoneTable(zones: [])
+        /// in beide Richtungen nach der Sicherung: diese Datenbanken, der Reihe nach
+        var twoWayDatabases: [String] = []
+        var twoWayCurrent: String?
+        /// aus dem syncInfo-Ereignis: welcher PC zuletzt abgeglichen hat
+        var lastSyncPC: UInt32 = 0
+        /// DateFix auf dem Palm: um so viele Jahre sind seine Daten und
+        /// seine Uhr verschoben (0: kein DateFix)
+        var dateFixYears = 0
+        /// die zusammengeführte Datenbank, die nach dem Schließen installiert
+        /// wird, und der Spiegel, der danach gespeichert wird (liefert die Zahl
+        /// seiner Einträge); der PC, der dann als letzter eingetragen wird
+        var twoWayInstall: URL?
+        /// nach dem Installieren: die Mac-Seite schreiben und den Spiegel
+        /// speichern (liefert die Zahl seiner Einträge)
+        var twoWayAfterInstall: (() throws -> Int)?
+        /// der Palm blieb, wie er war: nach dem Schließen nur lastSyncPC setzen
+        var twoWaySyncInfoOnly = false
+        var twoWayPCID: UInt32 = 0
+        /// wie viele Datensätze der Palm beim Öffnen gemeldet hat: weniger
+        /// gelesen heißt abgebrochen, nicht gelöscht
+        var twoWayExpected = -1
         var restoreFiles: [URL] = []
         var restoreDone = 0
         var restoreFailed = 0
@@ -607,6 +696,14 @@ final class AppState {
         var romResult: TabStatus.ROMDump?
         var timedOut = false
         var errorMessage: String?
+        /// der Palm antwortet nicht mehr (abgebrochen oder Verbindung weg):
+        /// nichts mehr anfangen, die Sitzung beenden
+        var palmLost = false
+        /// Netz: eine verbundene Sitzung, von der nichts mehr kommt, wird
+        /// beendet - libpisocks TCP-Seite kennt kein Lese-Timeout
+        var watchdog: DispatchWorkItem?
+        /// "Viele Löschungen zulassen" wurde gebraucht: nach der Sitzung wieder aus
+        var usedMassDelete = false
         var stopRequested = false
 
         init(runner: SessionRunner, purpose: Purpose, token: Int) {
@@ -619,8 +716,18 @@ final class AppState {
     private func launch(_ purpose: Session.Purpose, on port: String, baudRate: Int) {
         let chainStep: Bool
         if case .tab(_, let chain) = purpose { chainStep = chain } else { chainStep = false }
-        let runner = SessionRunner(port: port, baudRate: baudRate,
-                                   timeout: chainStep ? Self.chainStepTimeout : 0)
+        let timeout: Int
+        switch purpose {
+        case .listener: timeout = Self.listenerRefresh    // läuft danach frisch weiter
+        case .tab: timeout = chainStep ? Self.chainStepTimeout : 0
+        }
+        // ein Netzwerkanschluss nennt die Schnittstelle; das Werkzeug braucht ihre Adresse von jetzt
+        var toolPort = port
+        if let interface = SyncTab.networkInterface(of: port), interface != SyncTab.networkAll {
+            guard let address = LocalAddress.address(ofInterface: interface) else { return }   // nicht verbunden: später
+            toolPort = SyncTab.networkPrefix + address.ip
+        }
+        let runner = SessionRunner(port: port, toolPort: toolPort, baudRate: baudRate, timeout: timeout)
         nextToken += 1
         let session = Session(runner: runner, purpose: purpose, token: nextToken)
         if case .tab(let id, _) = purpose {
@@ -652,8 +759,37 @@ final class AppState {
         }
     }
 
+    /// Nach dieser Zeit ohne Ereignis gilt eine Netzwerksitzung als hängend.
+    private static let networkIdleLimit: TimeInterval = 180
+
+    /// So meldet das Werkzeug einen Palm, der nicht mehr da ist (über WLAN
+    /// merkt es der Socket erst spät): egal in welcher Phase, danach nichts
+    /// Weiteres versuchen.
+    private static func isLostLink(_ message: String) -> Bool {
+        message.contains("connection lost") || message.contains("does not answer")
+    }
+
     private func handle(_ event: SessionEvent, of session: Session) {
         let port = session.runner.port
+        if case .error(let stage, let message) = event, Self.isLostLink(message) {
+            session.errorMessage = "\(stage): \(message)"
+            DebugLog.shared.log(L10n.logSessionError(portLabel(port), stage, message), source: "Session")
+            if let tabId = session.tabId { tabLog(tabId, L10n.logSessionError(portLabel(port), stage, message)) }
+            session.palmLost = true
+            if stage != "backup" { endLostSession(session) }   // die Sicherung meldet gleich ihr Ende
+            return
+        }
+        if SyncTab.isNetworkPort(port), session.connected || { if case .connected = event { return true } else { return false } }() {
+            session.watchdog?.cancel()
+            let work = DispatchWorkItem { [weak self, weak session] in
+                guard let self, let session, self.sessions[port] === session else { return }
+                if let tabId = session.tabId { self.tabLog(tabId, L10n.logNetworkIdle) }
+                DebugLog.shared.log(L10n.logNetworkIdle, source: self.portLabel(port))
+                session.runner.kill()
+            }
+            session.watchdog = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.networkIdleLimit, execute: work)
+        }
         switch event {
         case .listening:
             let since = Date()
@@ -669,9 +805,15 @@ final class AppState {
         case .timeout:
             session.timedOut = true
 
-        case .connected(let user, let romVersion):
+        case .connected(let user, let romVersion, let dateFixStartYear):
             session.connected = true
             session.romVersion = romVersion
+            // nur was DateFix selbst zulässt: 1904 … 1972 in Viererschritten
+            if let y = dateFixStartYear, (1904...1972).contains(y), (y - 1904) % 4 == 0 {
+                session.dateFixYears = y - 1904
+            } else {
+                session.dateFixYears = 0
+            }
             // ein Palm ist durchgekommen: frühere Fehler hier sind erledigt
             notices.removeAll { if case .failed = $0.kind { return $0.port == port } else { return false } }
             session.user = user
@@ -682,6 +824,70 @@ final class AppState {
             if let profileId = session.profileId {
                 deviceManager.assignIdentity(user, to: profileId)
             }
+
+        // Kalender in beide Richtungen (Probelauf): lesen, planen, schließen
+        case .syncInfo(let pc, _):
+            session.lastSyncPC = pc
+        case .dbOpened(_, let records) where session.stage == .twoWayCalendar:
+            session.twoWayExpected = records
+            session.runner.send("readappinfo")
+        case .appInfo(let data) where session.stage == .twoWayCalendar:
+            session.calendarAppInfo = data
+            session.runner.send("readall")
+        case .record(let id, _, let attrs, let category, let data) where session.stage == .twoWayCalendar:
+            session.calendarRecords.append(PalmRecordIn(id: id, attributes: attrs, category: category, data: data))
+        case .recordsDone(let count, _) where session.stage == .twoWayCalendar:
+            if session.twoWayExpected >= 0 && count != session.twoWayExpected {
+                // weniger als angekündigt: die Lesung ist unvollständig, ein
+                // Abgleich darauf hielte fehlende Datensätze für gelöscht
+                if let tabId = session.tabId {
+                    tabLog(tabId, L10n.logTwoWayTruncated(twoWayName(session.twoWayCurrent ?? ""), count, session.twoWayExpected))
+                }
+                session.runner.send("closedb")
+            } else {
+                twoWayPlanned(session)   // schließt die Datenbank selbst, wenn es so weit ist
+            }
+        case .dbClosed where session.stage == .twoWayCalendar:
+            if let url = session.twoWayInstall {
+                session.twoWayInstall = nil
+                session.runner.send("install \(url.path)")
+            } else if session.twoWaySyncInfoOnly {
+                session.twoWaySyncInfoOnly = false
+                session.runner.send("syncinfo \(session.twoWayPCID)")
+            } else {
+                twoWayNext(session)
+            }
+        case .installing where session.stage == .twoWayCalendar:
+            break
+        case .installed where session.stage == .twoWayCalendar:
+            twoWayInstalled(session)
+        case .failed(_, let failure) where session.stage == .twoWayCalendar:
+            // der Palm hat die Datenbank nicht bekommen: auf dem Mac bleibt
+            // alles, wie es war, der Spiegel auch
+            if let tabId = session.tabId { tabLog(tabId, L10n.logTwoWayFailed(L10n.failureText(failure))) }
+            session.twoWayAfterInstall = nil
+            twoWayNext(session)
+        case .syncInfoWritten where session.stage == .twoWayCalendar:
+            if let tabId = session.tabId { tabLog(tabId, L10n.logTwoWayDone) }
+            twoWayNext(session)
+        case .error(let stage, let message) where session.stage == .twoWayCalendar && stage == "syncinfo":
+            if let tabId = session.tabId { tabLog(tabId, L10n.logTwoWayFailed("\(stage): \(message)")) }
+            twoWayNext(session)
+        case .error(let stage, let message) where session.stage == .twoWayCalendar
+            && ["opendb", "readappinfo", "readall", "closedb"].contains(stage):
+            if let tabId = session.tabId { tabLog(tabId, L10n.logTwoWayFailed("\(stage): \(message)")) }
+            if stage == "readall" || stage == "readappinfo" { session.runner.send("closedb") } else { twoWayNext(session) }
+
+        // Zeitzonen: die korrigierte Ortsdatenbank wird installiert - vor den
+        // allgemeinen Fällen, sonst zählt sie als Datei der Warteschlange
+        case .installing where session.stage == .fixingLocations:
+            break
+        case .installed(let file, _) where session.stage == .fixingLocations:
+            if let tabId = session.tabId { tabLog(tabId, L10n.logLocationsInstalled(file)) }
+            fixLocations(session)
+        case .failed(let file, let failure) where session.stage == .fixingLocations:
+            if let tabId = session.tabId { tabLog(tabId, L10n.logLocationsFailed(file, "install", L10n.failureText(failure))) }
+            fixLocations(session)
 
         case .installing(let file):
             guard let tabId = session.tabId, let user = session.user else { return }
@@ -745,7 +951,11 @@ final class AppState {
             // vollständig nur, wenn jede Datenbank durch ist (nicht abgebrochen)
             session.backupFinished = session.backupDone >= session.backupTotal
             if let tabId = session.tabId { tabLog(tabId, L10n.logBackupFinished(saved, unchanged, failed)) }
-            afterBackup(session)
+            if session.palmLost {
+                endLostSession(session)
+            } else {
+                afterBackup(session)
+            }
 
         case .romStarted(let file, let version, let total):
             session.romTotal = total
@@ -775,16 +985,231 @@ final class AppState {
             if let tabId = session.tabId { tabLog(tabId, L10n.logROMFailed(message)) }
             endSession(session)
 
+        // Kalenderprüfung: Datenbank öffnen, AppInfo und alle Datensätze lesen, schließen
+        case .dbOpened where session.stage == .readingCalendar:
+            session.runner.send("readappinfo")
+        case .appInfo(let data) where session.stage == .readingCalendar:
+            session.calendarAppInfo = data
+            session.runner.send("readall")
+        case .record(let id, _, let attrs, let category, let data) where session.stage == .readingCalendar:
+            session.calendarRecords.append(PalmRecordIn(id: id, attributes: attrs, category: category, data: data))
+            if let tabId = session.tabId, let user = session.user, session.calendarRecords.count % 10 == 0 {
+                statuses[tabId]?.phase = .readingCalendar(user: user, database: session.checking ?? "", done: session.calendarRecords.count)
+            }
+        case .recordsDone where session.stage == .readingCalendar:
+            calendarRead(session)
+            session.runner.send("closedb")
+        case .dbClosed where session.stage == .readingCalendar:
+            afterBackup(session)    // die nächste Datenbank, oder weiter
+        case .error(let stage, let message) where session.stage == .readingCalendar
+            && ["opendb", "readappinfo", "readall", "closedb"].contains(stage):
+            // die Prüfung scheitert, die Sitzung selbst ist heil
+            if let tabId = session.tabId { tabLog(tabId, L10n.logCalendarCheckFailed(session.checking ?? "", stage, message)) }
+            if stage == "opendb" || stage == "closedb" {
+                afterBackup(session)
+            } else {
+                session.runner.send("closedb")
+            }
+
+        // Zeitzonen: Orte lesen, abweichende neu schreiben, schließen
+        case .timeSet(let date):
+            guard let tabId = session.tabId else { break }
+            if session.dateFixYears > 0 {
+                // der Palm zeigt das echte Jahr; gespeichert ist das verschobene
+                let real = Calendar.current.date(byAdding: .year, value: session.dateFixYears, to: date) ?? date
+                tabLog(tabId, L10n.logTimeSetDateFix(real, storedYear: Calendar.current.component(.year, from: date)))
+            } else {
+                tabLog(tabId, L10n.logTimeSet(date))
+            }
+        case .netSyncSet(let address, let name):
+            if let tabId = session.tabId { tabLog(tabId, L10n.logNetSyncSet(address, name)) }
+        case .dbOpened where session.stage == .fixingLocations:
+            session.runner.send("readall")
+        case .record(let id, _, let attrs, let category, let data) where session.stage == .fixingLocations:
+            session.calendarRecords.append(PalmRecordIn(id: id, attributes: attrs, category: category, data: data))
+        case .recordsDone where session.stage == .fixingLocations:
+            locationsRead(session)
+        case .dbClosed where session.stage == .fixingLocations:
+            if let url = session.fixInstall {
+                session.fixInstall = nil
+                session.runner.send("install \(url.path)")   // die korrigierte Datenbank, ganz
+            } else {
+                fixLocations(session)    // die nächste Datenbank, oder weiter
+            }
+        case .error(let stage, let message) where session.stage == .fixingLocations
+            && ["opendb", "readall", "closedb"].contains(stage):
+            if let tabId = session.tabId { tabLog(tabId, L10n.logLocationsFailed(session.fixing ?? "", stage, message)) }
+            if stage == "readall" { session.runner.send("closedb") } else { fixLocations(session) }
+
         case .error(let stage, let message):
             session.errorMessage = "\(stage): \(message)"
             DebugLog.shared.log(L10n.logSessionError(portLabel(port), stage, message), source: "Session")
             if let tabId = session.tabId { tabLog(tabId, L10n.logSessionError(portLabel(port), stage, message)) }
+
+        case .dbOpened, .dbClosed, .appInfo, .appInfoWritten, .record, .recordsDone,
+             .recordWritten, .recordDeleted, .flagsReset, .cleanedUp, .syncInfoWritten:
+            // Datensatzzugriff außerhalb der Kalenderprüfung: gehört dem
+            // Abgleich, den die App noch nicht fährt
+            break
+        }
+    }
+
+    // MARK: - Kalender-Abgleich
+
+    func setCalendarSync(_ settings: CalendarSyncSettings, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.calendarSync = settings
+        deviceManager.updateProfile(profile)
+        refreshCalendarPreview(for: profileId)
+    }
+
+    func setClockSync(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.clockSync = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setZoneSync(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.zoneSync = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setNetSync(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.netSync = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setContactSync(_ settings: ContactSyncSettings, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.contactSync = settings
+        deviceManager.updateProfile(profile)
+        refreshContactPreview(for: profileId)
+    }
+
+    func setAllowMassDelete(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.allowMassDelete = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setDryRun(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.dryRun = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setCalendarTwoWay(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.calendarTwoWay = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setContactTwoWay(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.contactTwoWay = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setTaskTwoWay(_ on: Bool, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.taskTwoWay = on
+        deviceManager.updateProfile(profile)
+    }
+
+    func setTaskSync(_ settings: TaskSyncSettings, for profileId: UUID) {
+        guard var profile = deviceManager.profile(profileId) else { return }
+        profile.taskSync = settings
+        deviceManager.updateProfile(profile)
+        refreshTaskPreview(for: profileId)
+    }
+
+    private(set) var taskPreviews: [UUID: String] = [:]
+
+    func taskPreview(for profileId: UUID) -> String? { taskPreviews[profileId] }
+
+    func refreshTaskPreview(for profileId: UUID) {
+        let key = "tasks-\(profileId)"
+        previewTasks[key]?.cancel()
+        guard let settings = deviceManager.profile(profileId)?.taskSync, !settings.lists.isEmpty,
+              reminderSource.hasAccess else {
+            if taskPreviews[profileId] != nil { taskPreviews[profileId] = nil }
+            return
+        }
+        let source = reminderSource
+        previewTasks[key] = Task { [weak self] in
+            let text: String? = await Task.detached {
+                guard let run = try? await TaskSyncRun(settings: settings, source: source) else { return nil }
+                return L10n.taskSyncPreview(run.report.records, run.report.categories.count - 1, run.report.completedSkipped)
+            }.value
+            guard !Task.isCancelled else { return }
+            self?.taskPreviews[profileId] = text
+        }
+    }
+
+    /// Was der nächste HotSync tragen würde, je Profil - einmal gerechnet,
+    /// wenn sich die Einstellungen ändern, nicht bei jedem Zeichnen der View
+    private(set) var calendarPreviews: [UUID: String] = [:]
+    private(set) var contactPreviews: [UUID: String] = [:]
+    private var previewTasks: [String: Task<Void, Never>] = [:]
+
+    // Nur lesen: ein Anstoß von hier aus würde beim Zeichnen den Zustand
+    // ändern und die View endlos neu zeichnen. Die Abschnitte stoßen beim
+    // Erscheinen an.
+    func calendarPreview(for profileId: UUID) -> String? { calendarPreviews[profileId] }
+    func contactPreview(for profileId: UUID) -> String? { contactPreviews[profileId] }
+
+    func refreshCalendarPreview(for profileId: UUID) {
+        let key = "calendar-\(profileId)"
+        previewTasks[key]?.cancel()
+        guard let settings = deviceManager.profile(profileId)?.calendarSync, !settings.calendars.isEmpty,
+              calendarSource.hasAccess else {
+            if calendarPreviews[profileId] != nil { calendarPreviews[profileId] = nil }
+            return
+        }
+        let source = calendarSource
+        previewTasks[key] = Task { [weak self] in
+            let text: String? = await Task.detached {
+                guard let run = try? CalendarSyncRun(settings: settings, source: source) else { return nil }
+                return L10n.calendarSyncPreview(run.report.records, run.report.seriesMapped, run.report.seriesExpanded)
+            }.value
+            guard !Task.isCancelled else { return }
+            self?.calendarPreviews[profileId] = text
+        }
+    }
+
+    func refreshContactPreview(for profileId: UUID) {
+        let key = "contacts-\(profileId)"
+        previewTasks[key]?.cancel()
+        guard let settings = deviceManager.profile(profileId)?.contactSync, !settings.containers.isEmpty,
+              contactSource.hasAccess else {
+            if contactPreviews[profileId] != nil { contactPreviews[profileId] = nil }
+            return
+        }
+        let source = contactSource
+        previewTasks[key] = Task { [weak self] in
+            let text: String? = await Task.detached {
+                guard let run = try? ContactSyncRun(settings: settings, source: source) else { return nil }
+                return L10n.contactSyncPreview(run.report.records, run.report.categories.count - 1, run.report.duplicatesDropped)
+            }.value
+            guard !Task.isCancelled else { return }
+            self?.contactPreviews[profileId] = text
         }
     }
 
     /// Ein Palm hat sich gemeldet: gehört er hierher - und zu welchem Profil?
     private func admit(_ user: PalmUser, session: Session) {
         let port = session.runner.port
+        // Ein Palm ohne Benutzer bekommt eine Identität nur am Kabel: über das
+        // Netz wäre es das erste Gerät, das sich meldet, wessen auch immer.
+        if SyncTab.isNetworkPort(port), user.isBlank {
+            DebugLog.shared.log(L10n.logNoAdoptOverNetwork, source: portLabel(port))
+            if let tabId = session.tabId { tabLog(tabId, L10n.logNoAdoptOverNetwork) }
+            session.runner.send("log " + L10n.palmLogNothingInstalled)
+            session.runner.send("end")
+            return
+        }
         let expected: UUID?
         let candidates: [ProfileIdentity]
         let all = deviceManager.identities
@@ -857,17 +1282,115 @@ final class AppState {
         // Das Fenster zeigt den Tab, der gerade synct
         selectedTabId = tabId
 
-        let files = queue.pendingFiles
+        let mode = tabStore.tab(tabId)?.hotSyncMode ?? .installBackup
+        let palmOS = PalmOSVersion(rom: session.romVersion)
+        if mode.syncs, let profile = deviceManager.profile(profileId), !palmOS.hasGarnetPIM {
+            // Datebook/Address/ToDo-Geräte: die P*-Datenbanken und locL* gibt es nicht
+            if profile.calendarSync?.enabled == true || profile.contactSync?.enabled == true || profile.taskSync?.enabled == true
+                || profile.isZoneSyncOn {
+                tabLog(tabId, L10n.logPalmOSTooOld(palmOS.description))
+            }
+            if profile.isClockSyncOn {
+                if profile.isDryRun { tabLog(tabId, L10n.logDryRunClock) } else { session.runner.send("settime") }
+            }
+        }
+        if mode.syncs, let profile = deviceManager.profile(profileId), palmOS.hasGarnetPIM {
+            let dry = profile.isDryRun
+            if dry { tabLog(tabId, L10n.logDryRun) }
+            // Uhr vom Mac jetzt, Zeitzonen nach der Sicherung
+            if session.dateFixYears > 0 { tabLog(tabId, L10n.logDateFix(1904 + session.dateFixYears)) }
+            if profile.isClockSyncOn {
+                if dry {
+                    tabLog(tabId, L10n.logDryRunClock)
+                } else if session.dateFixYears > 0 {
+                    session.runner.send("settime \(session.dateFixYears)")   // Wanduhrzeit, Jahr zurück
+                } else {
+                    session.runner.send("settime")
+                }
+            }
+            // über Kabel: diesen Mac als primären PC für den Netzwerk-HotSync eintragen
+            if profile.isNetSyncOn, !SyncTab.isNetworkPort(session.runner.port) {
+                if let address = LocalAddress.ipv4().first {
+                    if dry {
+                        tabLog(tabId, L10n.logDryRunNetSync(address.ip))
+                    } else {
+                        session.runner.send("netsync \(address.ip) \(address.netmask) \(LocalAddress.computerName)")
+                    }
+                } else {
+                    tabLog(tabId, L10n.logNetSyncNoAddress)
+                }
+            }
+            if profile.isZoneSyncOn { session.fixDatabases = ["locLTimeZoneDB", "locLDefLocationDB", "locLCusLocationDB"] }
+            // Erst sichern, dann ersetzen: ohne Sicherung dieses Palms gehen
+            // sein eigener Kalender und seine Kontakte nicht verloren
+            if let settings = profile.calendarSync, settings.enabled {
+                if profile.lastBackupAt == nil {
+                    tabLog(tabId, L10n.logCalendarNeedsBackup)   // ein- wie beidseitig: erst sichern
+                } else if profile.isCalendarTwoWay {
+                    // nach der Sicherung: Palm lesen, zusammenführen, dann schreiben
+                    session.twoWayDatabases.append(CalendarBuilder.databaseName)
+                    tabLog(tabId, L10n.logTwoWayPending(L10n.twoWayCalendar))
+                } else {
+                    queueCalendar(settings, profileId: profileId, tabId: tabId, queue: queue, dryRun: dry, dateFixYears: session.dateFixYears)
+                    if !dry { session.checkDatabases.append(CalendarBuilder.databaseName) }
+                }
+            }
+            if let settings = profile.contactSync, settings.enabled {
+                if profile.lastBackupAt == nil {
+                    tabLog(tabId, L10n.logContactsNeedBackup)
+                } else if profile.isContactTwoWay {
+                    session.twoWayDatabases.append(ContactsBuilder.databaseName)
+                    tabLog(tabId, L10n.logTwoWayPending(L10n.twoWayContacts))
+                } else {
+                    queueContacts(settings, profileId: profileId, tabId: tabId, queue: queue, dryRun: dry, dateFixYears: session.dateFixYears)
+                    if !dry { session.checkDatabases.append(ContactsBuilder.databaseName) }
+                }
+            }
+            if let settings = profile.taskSync, settings.enabled {
+                if profile.lastBackupAt == nil {
+                    tabLog(tabId, L10n.logTasksNeedBackup)
+                } else if profile.isTaskTwoWay {
+                    session.twoWayDatabases.append(TasksBuilder.databaseName)
+                    tabLog(tabId, L10n.logTwoWayPending(L10n.twoWayTasks))
+                } else {
+                    if !dry { session.checkDatabases.append(TasksBuilder.databaseName) }
+                    // Reminders liefert asynchron; der Palm wartet solange (Lebenszeichen)
+                    Task { @MainActor [weak self, weak session] in
+                        guard let self, let session else { return }
+                        await self.queueTasks(settings, profileId: profileId, tabId: tabId, queue: queue, dryRun: dry, dateFixYears: session.dateFixYears)
+                        self.startQueue(session, profileId: profileId, tabId: tabId, user: user, queue: queue, mode: mode)
+                    }
+                    return
+                }
+            }
+        }
+        startQueue(session, profileId: profileId, tabId: tabId, user: user, queue: queue, mode: mode)
+    }
+
+    /// Die Warteschlange ist vollständig: was von ihr auf den Palm geht,
+    /// zurückspielen falls angefragt, dann installieren.
+    private func startQueue(_ session: Session, profileId: UUID, tabId: UUID, user: PalmUser, queue: InstallQueue, mode: HotSyncMode) {
+        // "Nur abgleichen": von der Warteschlange gehen nur die Datenbanken
+        // des Abgleichs auf den Palm, der Rest wartet
+        let synced = [CalendarBuilder.databaseName, ContactsBuilder.databaseName, TasksBuilder.databaseName].map { "\($0).pdb" }
+        let files = mode.installs ? queue.pendingFiles : queue.pendingFiles.filter { synced.contains($0.lastPathComponent) }
         session.files = files
         queue.beginInstall(files, session: session.token)
         deviceManager.updateRomVersion(session.romVersion, for: profileId)
         if restoreRequests.remove(profileId) != nil {
             session.restoreFiles = backupFiles(for: profileId)
+            // Nach dem Zurückspielen hat der Palm den Stand der Sicherung,
+            // der Spiegel den letzten Abgleich: ein Abgleich jetzt hielte
+            // alles seither für gelöscht. Beim nächsten HotSync wieder.
+            if !session.twoWayDatabases.isEmpty {
+                session.twoWayDatabases = []
+                tabLog(tabId, L10n.logTwoWayRestoreSkipped)
+            }
         }
         session.romRequested = romRequests.remove(profileId) != nil
         // Nach dem Zurückspielen nicht gleich wieder sichern: der Palm hat
         // gerade die Sicherung bekommen
-        session.backupEnabled = (tabStore.tab(tabId)?.isFullSync ?? false) && session.restoreFiles.isEmpty
+        session.backupEnabled = mode.backsUp && session.restoreFiles.isEmpty
         statuses[tabId]?.lastResult = nil
         statuses[tabId]?.lastBackup = nil
         statuses[tabId]?.lastRestore = nil
@@ -935,6 +1458,44 @@ final class AppState {
         }
     }
 
+    /// Baut CalendarDB-PDat aus Calendar.app und legt es in die Warteschlange,
+    /// damit es mit diesem HotSync auf den Palm geht.
+    /// Wohin eine gebaute Datenbank kommt: in die Warteschlange, oder beim
+    /// Probelauf daneben nach Sync/DryRun, wo sie niemand installiert.
+    private func syncTarget(_ name: String, for profile: DeviceProfile, dryRun: Bool) throws -> URL {
+        if !dryRun { return deviceManager.installDirectory(for: profile).appendingPathComponent("\(name).pdb") }
+        let dir = deviceManager.profileDirectory(for: profile).appendingPathComponent("Sync").appendingPathComponent("DryRun")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(name).pdb")
+    }
+
+    /// Schreibt eine gebaute Datenbank (die Erbauer rechnen DateFix' Jahre
+    /// schon beim Kodieren ein).
+    private func writeDatabase(_ db: PalmDatabase, to url: URL) throws -> Int {
+        let image = db.encode()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try image.write(to: url, options: .atomic)
+        return image.count
+    }
+
+    private func queueCalendar(_ settings: CalendarSyncSettings, profileId: UUID, tabId: UUID, queue: InstallQueue, dryRun: Bool,
+                               dateFixYears: Int) {
+        guard let profile = deviceManager.profile(profileId) else { return }
+        do {
+            let run = try CalendarSyncRun(settings: settings, source: calendarSource, dateShift: dateFixYears)
+            let url = try syncTarget(CalendarBuilder.databaseName, for: profile, dryRun: dryRun)
+            let bytes = try writeDatabase(run.database, to: url)
+            if dryRun { tabLog(tabId, L10n.logDryRunWouldInstall(CalendarBuilder.databaseName, run.report.records, bytes)); return }
+            queue.refresh()
+            tabLog(tabId, L10n.logCalendarQueued(run.report.records, run.report.seriesMapped, bytes))
+            for warning in run.report.warnings { tabLog(tabId, L10n.logCalendarWarning(warning)) }
+        } catch CalendarSyncRun.Failure.noAccess {
+            tabLog(tabId, L10n.logCalendarNoAccess)
+        } catch {
+            tabLog(tabId, L10n.logCalendarFailed(error.localizedDescription))
+        }
+    }
+
     /// Alle Dateien sind durch: sichern, falls eingeschaltet.
     private func installsDone(_ session: Session) {
         guard session.backupEnabled, let profileId = session.profileId,
@@ -949,8 +1510,629 @@ final class AppState {
         session.runner.send("backup \(directory.path)")
     }
 
-    /// Nach der Sicherung: das ROM auslesen, falls angefragt, sonst Ende.
+    /// Der Palm ist weg: Sitzung beenden statt weiterzumachen; antwortet das
+    /// Werkzeug auf einem toten Socket nicht, wird es nach kurzer Zeit beendet.
+    private func endLostSession(_ session: Session) {
+        if let tabId = session.tabId { tabLog(tabId, L10n.logPalmLost) }
+        session.runner.send("end")
+        let port = session.runner.port
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self, weak session] in
+            guard let self, let session, self.sessions[port] === session else { return }
+            session.runner.kill()
+        }
+    }
+
+    /// Nach der Sicherung: die abgeglichenen Datenbanken auf dem Palm
+    /// prüfen, eine nach der anderen, dann die Zeitzonen, dann das ROM.
     private func afterBackup(_ session: Session) {
+        guard !session.checkDatabases.isEmpty, let tabId = session.tabId, let user = session.user else {
+            twoWayNext(session)
+            return
+        }
+        let name = session.checkDatabases.removeFirst()
+        session.checking = name
+        session.calendarAppInfo = nil
+        session.calendarRecords = []
+        session.stage = .readingCalendar
+        statuses[tabId]?.phase = .readingCalendar(user: user, database: name, done: 0)
+        tabLog(tabId, L10n.logCalendarChecking(name))
+        session.runner.send("opendb r \(name)")
+    }
+
+    /// Eine Datenbank ist vom Palm gelesen: jeden Datensatz durch den Codec
+    /// und zurück - was nicht Byte für Byte übereinstimmt, steht im Log.
+    private func calendarRead(_ session: Session) {
+        guard let tabId = session.tabId, let name = session.checking else { return }
+        var identical = 0, different = 0, deleted = 0
+        for record in session.calendarRecords {
+            if record.isDeleted { deleted += 1; continue }
+            let back: Data?
+            switch name {
+            case CalendarBuilder.databaseName: back = (try? CalendarEvent(data: record.data))?.encode()
+            case ContactsBuilder.databaseName: back = (try? Contact(data: record.data))?.encode()
+            case TasksBuilder.databaseName: back = (try? PalmTask(data: record.data))?.encode()
+            default: back = record.data
+            }
+            if back == record.data {
+                identical += 1
+            } else {
+                different += 1
+                tabLog(tabId, L10n.logCalendarRecordDiffers(record.id, record.data.count,
+                                                              record.data.prefix(24).map { String(format: "%02x", $0) }.joined(separator: " ")))
+            }
+        }
+        let categories: [String]
+        if let info = session.calendarAppInfo {
+            switch name {
+            case CalendarBuilder.databaseName: categories = (try? CalendarAppInfo(data: info))?.categories.named.map(\.name) ?? []
+            case ContactsBuilder.databaseName: categories = (try? ContactAppInfo(data: info))?.categories.named.map(\.name) ?? []
+            case TasksBuilder.databaseName: categories = (try? TaskAppInfo(data: info))?.categories.named.map(\.name) ?? []
+            default: categories = (try? CategoryAppInfo(bytes: [UInt8](info)[...]))?.named.map(\.name) ?? []
+            }
+        } else {
+            categories = []
+        }
+        tabLog(tabId, L10n.logCalendarChecked(name, session.calendarRecords.count, identical, different, deleted, categories))
+    }
+
+    // MARK: Kalender in beide Richtungen (Probelauf)
+
+    /// Liest den Kalender des Palms, plant den Abgleich gegen den Spiegel
+    /// und schreibt den Plan ins Log - nichts wird geschrieben. Dann die
+    /// Zeitzonen.
+    private func twoWayNext(_ session: Session) {
+        guard !session.twoWayDatabases.isEmpty, let tabId = session.tabId, let user = session.user else {
+            session.twoWayCurrent = nil
+            fixLocations(session)
+            return
+        }
+        let name = session.twoWayDatabases.removeFirst()
+        session.twoWayCurrent = name
+        session.calendarAppInfo = nil
+        session.calendarRecords = []
+        session.twoWayInstall = nil
+        session.twoWayAfterInstall = nil
+        session.twoWaySyncInfoOnly = false
+        session.twoWayExpected = -1
+        session.stage = .twoWayCalendar
+        statuses[tabId]?.phase = .readingCalendar(user: user, database: name, done: 0)
+        tabLog(tabId, L10n.logTwoWayReading(twoWayName(name)))
+        session.runner.send("opendb r \(name)")
+    }
+
+    private func twoWayName(_ database: String) -> String {
+        switch database {
+        case ContactsBuilder.databaseName: return L10n.twoWayContacts
+        case TasksBuilder.databaseName: return L10n.twoWayTasks
+        default: return L10n.twoWayCalendar
+        }
+    }
+
+    /// Die PC-ID eines Profils: einmal festgelegt und gespeichert. Ein Profil
+    /// aus der Zeit, als jeder Spiegel seine eigene hatte, übernimmt die, die
+    /// der Palm gerade als letzten PC führt (sonst die erste gefundene).
+    private func syncPCID(for profile: DeviceProfile, session: Session) -> UInt32 {
+        if let id = profile.syncPCID { return id }
+        let files = ["calendar-mirror.json", "contacts-mirror.json", "tasks-mirror.json"]
+        let found = files.compactMap { file -> UInt32? in
+            guard let data = try? Data(contentsOf: mirrorURL(file, for: profile)),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = json["pcID"] as? UInt32 else { return nil }
+            return id
+        }
+        let id = found.contains(session.lastSyncPC) && session.lastSyncPC != 0 ? session.lastSyncPC
+            : (found.first ?? CalendarMirror.newPCID())
+        var updated = profile
+        updated.syncPCID = id
+        deviceManager.updateProfile(updated)
+        return id
+    }
+
+    private func mirrorURL(_ file: String, for profile: DeviceProfile) -> URL {
+        deviceManager.profileDirectory(for: profile).appendingPathComponent("Sync").appendingPathComponent(file)
+    }
+
+    /// Die Datenbank ist gelesen: Mac-Seite holen, planen, berichten, anwenden.
+    private func twoWayPlanned(_ session: Session) {
+        guard let profileId = session.profileId, let profile = deviceManager.profile(profileId) else {
+            session.runner.send("closedb")
+            return
+        }
+        switch session.twoWayCurrent {
+        case ContactsBuilder.databaseName: twoWayContacts(session, profile: profile)
+        case TasksBuilder.databaseName: twoWayTasks(session, profile: profile)
+        default: twoWayCalendar(session, profile: profile)
+        }
+    }
+
+    /// Was alle drei gemeinsam haben: Spiegel laden, planen, ins Log, und
+    /// außer im Probelauf die Mac-Seite schreiben und die zusammengeführte
+    /// Datenbank zum Installieren bereitlegen.
+    private func twoWayRun<Item: SyncedItem>(
+        _ session: Session, profile: DeviceProfile, what: String, mirrorFile: String, engine given: SyncEngine<Item>,
+        palmCategories: [String], mac: [MacSyncItem<Item>],
+        titleOf: @escaping (Data) -> String?,
+        applyMac: @escaping (SyncPlan<Item>) -> (createdKeys: [Int: MacKey], updated: Int, deleted: Int, failures: [String], failedEntries: [Int]),
+        palmDatabase: @escaping (SyncPlan<Item>) -> (database: PalmDatabase, palmIDs: [Int: UInt32]),
+        completion: @escaping () -> Void
+    ) {
+        // wer fragt, ruft completion später selbst; alle anderen Wege hier
+        var asked = false
+        defer { if !asked { completion() } }
+        guard let tabId = session.tabId else { return }
+        let url = mirrorURL(mirrorFile, for: profile)
+        let pcID = syncPCID(for: profile, session: session)
+        var mirror: SyncMirror<Item>
+        if FileManager.default.fileExists(atPath: url.path) {
+            // ein Spiegel, der nicht lädt, ist kein neuer Spiegel: ohne ihn
+            // würde alles nach Inhalt gepaart und Doppeltes angelegt
+            do { mirror = try SyncMirror<Item>.load(from: url) } catch {
+                tabLog(tabId, L10n.logTwoWayMirrorBroken(what, url.lastPathComponent, error.localizedDescription))
+                return
+            }
+        } else {
+            mirror = SyncMirror<Item>(pcID: pcID)
+        }
+        mirror.pcID = pcID   // alle Spiegel eines Profils unter derselben ID
+        let fast = mirror.lastSync != nil && session.lastSyncPC == mirror.pcID
+        tabLog(tabId, L10n.logTwoWayMode(what, fast: fast, lastSyncPC: session.lastSyncPC, mirrorEntries: mirror.entries.count))
+        // Nur wenn zuletzt dieser Mac abgeglichen hat, heißt "fehlt auf dem
+        // Palm" auch "dort gelöscht". Sonst (Hard Reset, anderer PC, halb
+        // installierte Datenbank) wird auf dem Mac nichts gelöscht.
+        if SyncTab.isNetworkPort(session.runner.port), !fast {
+            // über das Netz nur ein Palm, den dieser Mac schon am Kabel abgeglichen hat
+            tabLog(tabId, L10n.logTwoWayNetworkNeedsCable(what))
+            return
+        }
+        var engine = given
+        engine.palmDeletesTrusted = fast
+        engine.dateShift = session.dateFixYears   // DateFix: Palm-Jahre ↔ echte Jahre, an den Werten
+        // Ein anderes DateFix-Startjahr als beim letzten Abgleich: die Bytes
+        // auf dem Palm sind dieselben, bedeuten aber andere Jahre. Mit dem
+        // alten gelesen, mit dem neuen alle zurückgeschrieben.
+        let startYear = 1904 + session.dateFixYears
+        if let known = mirror.dateFixStartYear, known != startYear {
+            engine.previousDateShift = known - 1904
+            tabLog(tabId, L10n.logDateFixChanged(what, from: known, to: startYear))
+        }
+        mirror.dateFixStartYear = startYear
+        if !fast, !mirror.entries.isEmpty { tabLog(tabId, L10n.logTwoWayDeletesUntrusted(what)) }
+        let bases = Dictionary(mirror.entries.map { ($0.palmID, $0.base) }, uniquingKeysWith: { a, _ in a })
+        let palm = PalmSnapshot.all(session.calendarRecords)   // es wird immer alles gelesen
+
+        func report(_ plan: SyncPlan<Item>, policy: ConflictPolicy) {
+            tabLog(tabId, L10n.logTwoWaySummary(what, toPalm: plan.palmWrites.count, palmDeletes: plan.palmDeletes.count + plan.agedOut.count,
+                                                toMac: plan.macCreates.count + plan.macUpdates.count, macDeletes: plan.macDeletes.count,
+                                                conflicts: plan.conflicts.count, policy: policy))
+            var lines: [String] = []
+            for w in plan.palmWrites.prefix(10) { lines.append(L10n.logTwoWayToPalm(titleOf(w.record) ?? "?", new: w.id == nil)) }
+            for c in plan.macCreates.prefix(10) { lines.append(L10n.logTwoWayToMac(c.item.title ?? "?", new: true)) }
+            for c in plan.macUpdates.prefix(10) { lines.append(L10n.logTwoWayToMac(c.item.title ?? "?", new: false)) }
+            for conflict in plan.conflicts.prefix(10) {
+                lines.append(L10n.logTwoWayConflict(conflict.title, conflict.field, conflict.palmValue, conflict.macValue,
+                                                    policy: policy == .ask ? .ask : conflict.resolution))
+            }
+            for line in lines { tabLog(tabId, "  " + line) }
+            for line in plan.log.prefix(10) { tabLog(tabId, "  " + line) }
+            if !plan.missingCategories.isEmpty { tabLog(tabId, L10n.logTwoWayMissingCategories(plan.missingCategories)) }
+        }
+
+        let firstPlan: SyncPlan<Item>
+        do {
+            firstPlan = try engine.plan(palm: palm, palmCategories: palmCategories, mac: mac, mirror: mirror)
+        } catch {
+            tabLog(tabId, L10n.logTwoWayFailed(error.localizedDescription))
+            return
+        }
+        report(firstPlan, policy: engine.conflictPolicy)
+
+        guard !profile.isDryRun else {
+            tabLog(tabId, L10n.logTwoWayDryRunDone)
+            return
+        }
+
+        // "Fragen": der Palm wartet (das Werkzeug hält ihn wach), der Benutzer
+        // entscheidet jeden Konflikt, dann wird mit den Antworten neu geplant
+        if engine.conflictPolicy == .ask, !firstPlan.conflicts.isEmpty, let user = session.user {
+            asked = true
+            session.watchdog?.cancel()   // kein Ereignis, solange gefragt wird
+            tabLog(tabId, L10n.logTwoWayAsking(what, firstPlan.conflicts.count))
+            conflictPrompt = ConflictPrompt(what: what, palmName: user.name, conflicts: firstPlan.conflicts, sessionToken: session.token)
+            onAttentionNeeded?()
+            conflictAnswer = { [weak self, weak session] choices in
+                guard let self, let session else { return }
+                defer { completion() }
+                guard let choices else {
+                    self.tabLog(tabId, L10n.logTwoWaySkippedByUser(what))
+                    return
+                }
+                var decided = engine
+                decided.resolve = { i, _ in i < choices.count ? choices[i] : .macWins }
+                do {
+                    let plan = try decided.plan(palm: palm, palmCategories: palmCategories, mac: mac, mirror: mirror)
+                    self.tabLog(tabId, L10n.logTwoWayAnswered(what, mac: choices.filter { $0 == .macWins }.count,
+                                                              palm: choices.filter { $0 == .palmWins }.count,
+                                                              both: choices.filter { $0 == .keepBoth }.count))
+                    report(plan, policy: .ask)
+                    self.twoWayProceed(plan, session: session, profile: profile, what: what, mirror: mirror, mirrorURL: url, bases: bases,
+                                       applyMac: applyMac, palmDatabase: palmDatabase)
+                } catch {
+                    self.tabLog(tabId, L10n.logTwoWayFailed(error.localizedDescription))
+                }
+            }
+            return
+        }
+        twoWayProceed(firstPlan, session: session, profile: profile, what: what, mirror: mirror, mirrorURL: url, bases: bases,
+                      applyMac: applyMac, palmDatabase: palmDatabase)
+    }
+
+    /// Der Plan steht: Massenlöschungen prüfen, den Palm, dann den Mac, dann
+    /// den Spiegel.
+    private func twoWayProceed<Item: SyncedItem>(
+        _ plan: SyncPlan<Item>, session: Session, profile: DeviceProfile, what: String, mirror: SyncMirror<Item>, mirrorURL url: URL,
+        bases: [UInt32: Item],
+        applyMac: @escaping (SyncPlan<Item>) -> (createdKeys: [Int: MacKey], updated: Int, deleted: Int, failures: [String], failedEntries: [Int]),
+        palmDatabase: (SyncPlan<Item>) -> (database: PalmDatabase, palmIDs: [Int: UInt32])
+    ) {
+        guard let tabId = session.tabId else { return }
+        do {
+            // Viele Löschungen oder Änderungen auf einmal sind eher ein Fehler
+            // (leere Quelle, falsche Zuordnung, verstellte Uhr) als Absicht:
+            // nur mit ausdrücklicher Erlaubnis
+            if let mass = plan.massChange(mirrorEntries: mirror.entries.count) {
+                guard profile.isMassDeleteAllowed else {
+                    tabLog(tabId, L10n.logTwoWayMassRefused(what, mass, mirror: mirror.entries.count))
+                    return
+                }
+                tabLog(tabId, L10n.logTwoWayMassAllowed(what, mass))
+                session.usedMassDelete = true   // gilt für diesen einen HotSync, alle Datenbanken
+            }
+
+            // Erst der Palm (die zusammengeführte Datenbank, nach dem Schließen
+            // installiert), dann der Mac, dann der Spiegel: schlägt die
+            // Installation fehl, ist auf dem Mac nichts passiert.
+            let (db, palmIDs) = palmDatabase(plan)
+            let palmUnchanged = plan.palmWrites.isEmpty && plan.palmDeletes.isEmpty && plan.agedOut.isEmpty
+                && plan.missingCategories.isEmpty && mirror.lastSync != nil
+            session.twoWayPCID = mirror.pcID
+            let finish: () throws -> Int = { [weak self] in
+                let result = applyMac(plan)
+                self?.tabLog(tabId, L10n.logTwoWayMacApplied(result.createdKeys.count, result.updated, result.deleted))
+                for failure in result.failures.prefix(10) { self?.tabLog(tabId, L10n.logTwoWayMacFailure(failure)) }
+                // was auf dem Mac nicht geschrieben wurde, behält im Spiegel den
+                // alten Stand und kommt beim nächsten Mal wieder dran
+                var kept = plan
+                for i in result.failedEntries where i < kept.entries.count {
+                    if let palmID = kept.entries[i].palmID, let base = bases[palmID] { kept.entries[i].item = base }
+                }
+                let after = kept.mirror(after: mirror, palmIDs: palmIDs, macKeys: result.createdKeys)
+                try after.save(to: url)
+                return after.entries.count
+            }
+            if palmUnchanged {
+                // nichts für den Palm: nicht installieren, nur die Mac-Seite und
+                // der Spiegel, und nach dem Schließen lastSyncPC
+                tabLog(tabId, L10n.logTwoWayPalmUnchanged(what))
+                do {
+                    let entries = try finish()
+                    tabLog(tabId, L10n.logTwoWayMirrorSaved(entries))
+                    session.twoWaySyncInfoOnly = true
+                } catch {
+                    tabLog(tabId, L10n.logTwoWayFailed(error.localizedDescription))
+                }
+                return
+            }
+            let dbURL = mirrorURL("\(db.name).pdb", for: profile)
+            _ = try writeDatabase(db, to: dbURL)
+            session.twoWayInstall = dbURL
+            session.twoWayAfterInstall = finish
+            tabLog(tabId, L10n.logTwoWayPalmInstalling(what, db.records.count))
+        } catch {
+            tabLog(tabId, L10n.logTwoWayFailed(error.localizedDescription))
+            session.twoWayInstall = nil
+            session.twoWayAfterInstall = nil
+        }
+    }
+
+    private func twoWayCalendar(_ session: Session, profile: DeviceProfile) {
+        guard let tabId = session.tabId, let settings = profile.calendarSync else {
+            session.runner.send("closedb")
+            return
+        }
+        guard calendarSource.hasAccess else {
+            tabLog(tabId, L10n.logCalendarNoAccess)
+            session.runner.send("closedb")
+            return
+        }
+        let appInfo = session.calendarAppInfo.flatMap { try? CalendarAppInfo(data: $0) }
+        let calendar = Foundation.Calendar.current
+        let startOfWeek: UInt8 = calendar.firstWeekday == 2 ? 1 : 0
+        let today = calendar.startOfDay(for: Date())
+        let windowStart = calendar.date(byAdding: .day, value: -settings.daysBack, to: today)!
+        let windowEnd = calendar.date(byAdding: .day, value: settings.daysAhead, to: today)!
+        let events: [MacEvent]
+        do { events = try calendarSource.events(from: windowStart, to: windowEnd, calendarIDs: settings.calendars.map(\.id)) } catch {
+            tabLog(tabId, L10n.logTwoWayFailed(error.localizedDescription))
+            session.runner.send("closedb")
+            return
+        }
+        let builder = CalendarBuilder(options: .init(homeZone: .current, windowStart: windowStart, windowEnd: windowEnd,
+                                                     calendars: settings.macCalendars, startOfWeek: startOfWeek))
+        let (start, end) = (PalmDate(windowStart, in: calendar), PalmDate(windowEnd, in: calendar))
+        let engine = SyncEngine<SyncedEvent>(conflictPolicy: settings.conflicts) { $0.date >= start && $0.date <= end }
+        let mac = builder.items(events).items.map {
+            MacSyncItem(key: $0.key, item: SyncedEvent($0.event, category: $0.category), macOwned: $0.macOwned,
+                        palmRecord: $0.event.encode())
+        }
+        let calendars = settings.calendars
+        let store = calendarSource.store
+        let writer = CalendarWriter(store: store, homeZone: .current,
+                                    fallback: calendars.first.flatMap { store.calendar(withIdentifier: $0.id) }) { category in
+            // the Palm holds 15 characters of a name
+            let id = calendars.first { String(($0.category ?? $0.title).prefix(CategoryAppInfo.nameWidth - 1)) == category }?.id
+            return id.flatMap { store.calendar(withIdentifier: $0) }
+        }
+        twoWayRun(session, profile: profile, what: L10n.twoWayCalendar, mirrorFile: "calendar-mirror.json", engine: engine,
+                  palmCategories: appInfo?.categories.names ?? ["Unfiled"], mac: mac,
+                  titleOf: { (try? CalendarEvent(data: $0))?.title },
+                  applyMac: { plan in
+                      let r = writer.apply(plan)
+                      return (r.createdKeys, r.updated, r.deleted, r.failures, r.failedEntries)
+                  },
+                  palmDatabase: { plan in
+                      let (db, ids, _) = plan.palmDatabase(categories: appInfo?.categories ?? CategoryAppInfo(), startOfWeek: startOfWeek)
+                      return (db, ids)
+                  },
+                  completion: { session.runner.send("closedb") })
+    }
+
+    private func twoWayContacts(_ session: Session, profile: DeviceProfile) {
+        guard let tabId = session.tabId, let settings = profile.contactSync else {
+            session.runner.send("closedb")
+            return
+        }
+        guard contactSource.hasAccess else {
+            tabLog(tabId, L10n.logContactsNoAccess)
+            session.runner.send("closedb")
+            return
+        }
+        guard let appInfoData = session.calendarAppInfo, let appInfo = try? ContactAppInfo(data: appInfoData) else {
+            tabLog(tabId, L10n.logTwoWayFailed("ContactsDB-PAdd: AppInfo"))
+            session.runner.send("closedb")
+            return
+        }
+        let containers = settings.containers.map(\.id)
+        let macContacts: [MacContact]
+        do { macContacts = try contactSource.contacts(in: containers) } catch {
+            tabLog(tabId, L10n.logContactsFailed(error.localizedDescription))
+            session.runner.send("closedb")
+            return
+        }
+        let builder = ContactsBuilder(options: .init(containers: settings.containers.map { .init(id: $0.id, title: $0.title) }))
+        var engine = SyncEngine<SyncedContact>(conflictPolicy: settings.conflicts)
+        if session.dateFixYears > 0 {
+            // ein Geburtstag vor DateFix' Fenster liegt auf dem Palm auf dessen
+            // erstem Tag: das ist keine Änderung, der Spiegel behält ihn
+            let startYear = 1904 + session.dateFixYears
+            engine.unclamp = { item, base in DateFix.unclamp(item, startYear: startYear, base: base) }
+        }
+        let writer = ContactWriter(store: contactSource.store, containerIDs: containers)
+        twoWayRun(session, profile: profile, what: L10n.twoWayContacts, mirrorFile: "contacts-mirror.json", engine: engine,
+                  palmCategories: appInfo.categories.names, mac: builder.syncItems(macContacts),
+                  titleOf: { (try? Contact(data: $0)).map { SyncedContact($0, category: "").title ?? "" } },
+                  applyMac: { plan in
+                      let r = writer.apply(plan)
+                      return (r.createdKeys, r.updated, r.deleted, r.failures, r.failedEntries)
+                  },
+                  palmDatabase: { plan in
+                      let (db, ids, _) = plan.palmDatabase(appInfo: appInfo)
+                      return (db, ids)
+                  },
+                  completion: { session.runner.send("closedb") })
+    }
+
+    private func twoWayTasks(_ session: Session, profile: DeviceProfile) {
+        // die Aufgaben schließen die Datenbank selbst (asynchron), auch bei jedem frühen Ende
+        guard let tabId = session.tabId, let settings = profile.taskSync else {
+            session.runner.send("closedb")
+            return
+        }
+        guard reminderSource.hasAccess else {
+            tabLog(tabId, L10n.logTasksNoAccess)
+            session.runner.send("closedb")
+            return
+        }
+        guard let appInfoData = session.calendarAppInfo, let appInfo = try? TaskAppInfo(data: appInfoData) else {
+            tabLog(tabId, L10n.logTwoWayFailed("TasksDB-PTod: AppInfo"))
+            session.runner.send("closedb")
+            return
+        }
+        // Reminders liefert asynchron; der Palm wartet solange (Lebenszeichen)
+        Task { @MainActor [weak self, weak session] in
+            guard let self, let session else { return }
+            var calendar = Foundation.Calendar(identifier: .gregorian)
+            calendar.timeZone = .current
+            let today = PalmDate(Date(), in: calendar)
+            let startOfWeek: UInt8 = Foundation.Calendar.current.firstWeekday == 2 ? 1 : 0
+            let reminders: [MacReminder]
+            do { reminders = try await self.reminderSource.reminders(in: settings.lists.map(\.id)) } catch {
+                self.tabLog(tabId, L10n.logTwoWayFailed(error.localizedDescription))
+                session.runner.send("closedb")
+                return
+            }
+            let builder = TasksBuilder(options: .init(lists: settings.lists.map { .init(id: $0.id, title: $0.title) },
+                                                      keepCompletedDays: settings.keepCompletedDays, today: today,
+                                                      startOfWeek: startOfWeek))
+            let engine = SyncEngine<SyncedTask>(conflictPolicy: settings.conflicts, inWindow: builder.inWindow)
+            let lists = settings.lists
+            let store = self.reminderSource.store
+            let writer = TaskWriter(store: store, homeZone: .current, today: today, startOfWeek: startOfWeek,
+                                    fallback: lists.first.flatMap { store.calendar(withIdentifier: $0.id) }) { category in
+                let id = lists.first { String($0.title.prefix(CategoryAppInfo.nameWidth - 1)) == category }?.id
+                return id.flatMap { store.calendar(withIdentifier: $0) }
+            }
+            self.twoWayRun(session, profile: profile, what: L10n.twoWayTasks, mirrorFile: "tasks-mirror.json", engine: engine,
+                           palmCategories: appInfo.categories.names, mac: builder.syncItems(reminders),
+                           titleOf: { (try? PalmTask(data: $0))?.title },
+                           applyMac: { plan in
+                               let r = writer.apply(plan)
+                               return (r.createdKeys, r.updated, r.deleted, r.failures, r.failedEntries)
+                           },
+                           palmDatabase: { plan in
+                               let (db, ids, _) = plan.palmDatabase(appInfo: appInfo)
+                               return (db, ids)
+                           },
+                           completion: { session.runner.send("closedb") })
+        }
+    }
+
+    /// Die zusammengeführte Datenbank ist auf dem Palm: Spiegel speichern,
+    /// diesen Mac als letzten PC eintragen.
+    private func twoWayInstalled(_ session: Session) {
+        guard let tabId = session.tabId, let finish = session.twoWayAfterInstall else { return }
+        session.twoWayAfterInstall = nil
+        do {
+            let entries = try finish()
+            tabLog(tabId, L10n.logTwoWayMirrorSaved(entries))
+        } catch {
+            // ohne gespeicherten Spiegel darf der Palm uns nicht als letzten PC
+            // führen: der nächste Abgleich paart nach Inhalt und löscht nichts
+            tabLog(tabId, L10n.logTwoWayFailed(error.localizedDescription))
+            twoWayNext(session)
+            return
+        }
+        session.runner.send("syncinfo \(session.twoWayPCID)")
+    }
+
+    /// Die Ortsdatenbanken des Palms (eingebaute und eigene Orte) mit der
+    /// tzdata des Macs vergleichen und abweichende Einträge neu schreiben:
+    /// ein Palm OS 5 kennt weder die Regeln von 2007 noch eine Provinz, die
+    /// die Uhr nicht mehr umstellt. Eine Datenbank nach der anderen.
+    private func fixLocations(_ session: Session) {
+        guard !session.fixDatabases.isEmpty, let tabId = session.tabId, let user = session.user else {
+            afterCalendarCheck(session)
+            return
+        }
+        let name = session.fixDatabases.removeFirst()
+        session.fixing = name
+        session.calendarRecords = []
+        session.fixChanged = 0
+        session.fixUnknown = 0
+        session.fixInstall = nil
+        session.stage = .fixingLocations
+        statuses[tabId]?.phase = .readingCalendar(user: user, database: name, done: 0)
+        tabLog(tabId, L10n.logLocationsChecking(name))
+        session.runner.send("opendb r \(name)")
+    }
+
+    /// Die Orte sind gelesen: weicht einer von der tzdata ab, geht die ganze
+    /// Datenbank korrigiert zurück - installiert, in derselben Reihenfolge.
+    /// Einzelne Datensätze zu schreiben bringt die Reihenfolge durcheinander,
+    /// und der Palm spricht seine Orte über die Position an.
+    private func locationsRead(_ session: Session) {
+        guard let tabId = session.tabId, let name = session.fixing, let profileId = session.profileId,
+              let profile = deviceManager.profile(profileId) else { return }
+        if name == "locLTimeZoneDB" {
+            // nur gelesen: die Zonennamen, nach denen der Palm seine Orte ordnet
+            session.zoneTable = PalmZoneTable(records: session.calendarRecords.map(\.data))
+            session.runner.send("closedb")
+            return
+        }
+        session.fixTotal = session.calendarRecords.count
+        var records: [PalmDatabase.Record] = []
+        for record in session.calendarRecords where !record.isDeleted {
+            var data = record.data
+            if let location = try? PalmLocation(data: record.data) {
+                if TimeZoneFixups.zone(for: location) == nil {
+                    session.fixUnknown += 1
+                } else if let (fixed, change) = TimeZoneFixups.fix(location) {
+                    tabLog(tabId, L10n.logLocationFixed(change))
+                    session.fixChanged += 1
+                    data = fixed.encode()
+                }
+            }
+            records.append(PalmDatabase.Record(attributes: 0, category: record.category, uniqueID: record.id, data: data))
+        }
+        tabLog(tabId, L10n.logLocationsDone(name, session.fixChanged, session.fixTotal, session.fixUnknown))
+
+        // Die Auswahlliste des Palms geht davon aus, dass die eingebauten Orte
+        // nach Zonenname und Stadt gespeichert sind: ändert sich eine Zone,
+        // wird der Länderblock so sortiert, sonst öffnet "Vancouver" St. John's
+        var reordered = false
+        if name == "locLDefLocationDB" {
+            let sorted = TimeZoneFixups.reorderWithinCountries(records, location: { try? PalmLocation(data: $0.data) },
+                                                               zones: session.zoneTable)
+            if sorted.map(\.uniqueID) != records.map(\.uniqueID) {
+                reordered = true
+                records = sorted
+                tabLog(tabId, L10n.logLocationsReordered)
+            }
+        }
+
+        if session.fixChanged > 0 || reordered {
+            // wie die des Palms: Version 2, Backup-Flag, Typ DATA (eingebaute) / DATC (eigene)
+            var db = PalmDatabase(name: name, type: name == "locLCusLocationDB" ? "DATC" : "DATA", creator: "locL",
+                                  attributes: 0x0008, version: 2)
+            db.records = records
+            db.uniqueIDSeed = (records.map(\.uniqueID).max() ?? 0) + 1
+            let url = deviceManager.profileDirectory(for: profile).appendingPathComponent("Sync")
+                .appendingPathComponent("\(name).pdb")
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try db.encode().write(to: url, options: .atomic)
+                if profile.isDryRun {
+                    tabLog(tabId, L10n.logDryRunWouldInstall(name, records.count, db.encode().count))
+                } else {
+                    session.fixInstall = url
+                    if name == "locLDefLocationDB" { tabLog(tabId, L10n.logLocationsHint) }
+                }
+            } catch {
+                tabLog(tabId, L10n.logLocationsFailed(name, "write", error.localizedDescription))
+            }
+        }
+        session.runner.send("closedb")
+    }
+
+    /// Baut TasksDB-PTod aus Reminders.app und legt es in die Warteschlange.
+    private func queueTasks(_ settings: TaskSyncSettings, profileId: UUID, tabId: UUID, queue: InstallQueue, dryRun: Bool,
+                            dateFixYears: Int) async {
+        guard let profile = deviceManager.profile(profileId) else { return }
+        do {
+            let run = try await TaskSyncRun(settings: settings, source: reminderSource, dateShift: dateFixYears)
+            let url = try syncTarget(TasksBuilder.databaseName, for: profile, dryRun: dryRun)
+            let bytes = try writeDatabase(run.database, to: url)
+            if dryRun { tabLog(tabId, L10n.logDryRunWouldInstall(TasksBuilder.databaseName, run.report.records, bytes)); return }
+            queue.refresh()
+            tabLog(tabId, L10n.logTasksQueued(run.report.records, run.report.completedSkipped, bytes))
+            for warning in run.report.warnings { tabLog(tabId, L10n.logTasksWarning(warning)) }
+        } catch TaskSyncRun.Failure.noAccess {
+            tabLog(tabId, L10n.logTasksNoAccess)
+        } catch {
+            tabLog(tabId, L10n.logTasksFailed(error.localizedDescription))
+        }
+    }
+
+    /// Baut ContactsDB-PAdd aus Contacts.app und legt es in die Warteschlange.
+    private func queueContacts(_ settings: ContactSyncSettings, profileId: UUID, tabId: UUID, queue: InstallQueue, dryRun: Bool,
+                               dateFixYears: Int) {
+        guard let profile = deviceManager.profile(profileId) else { return }
+        do {
+            let run = try ContactSyncRun(settings: settings, source: contactSource, dateShift: dateFixYears)
+            let url = try syncTarget(ContactsBuilder.databaseName, for: profile, dryRun: dryRun)
+            let bytes = try writeDatabase(run.database, to: url)
+            if dryRun { tabLog(tabId, L10n.logDryRunWouldInstall(ContactsBuilder.databaseName, run.report.records, bytes)); return }
+            queue.refresh()
+            tabLog(tabId, L10n.logContactsQueued(run.report.records, run.report.categories.count - 1, bytes))
+            for warning in run.report.warnings { tabLog(tabId, L10n.logContactsWarning(warning)) }
+        } catch ContactSyncRun.Failure.noAccess {
+            tabLog(tabId, L10n.logContactsNoAccess)
+        } catch {
+            tabLog(tabId, L10n.logContactsFailed(error.localizedDescription))
+        }
+    }
+
+    /// Nach der Kalenderprüfung: das ROM auslesen, falls angefragt, sonst Ende.
+    private func afterCalendarCheck(_ session: Session) {
         guard session.romRequested, let profileId = session.profileId,
               let profile = deviceManager.profile(profileId), let tabId = session.tabId else {
             endSession(session)
@@ -1002,12 +2184,25 @@ final class AppState {
 
     /// Das Werkzeug hat sich beendet - alle Ereignisse sind ausgewertet.
     private func finish(_ session: Session, exit: SessionRunner.Exit) {
+        session.watchdog?.cancel()
+        session.watchdog = nil
+        // "Viele Änderungen zulassen" gilt für einen HotSync, gebraucht oder nicht
+        if session.admitted, let profileId = session.profileId, deviceManager.profile(profileId)?.isMassDeleteAllowed == true {
+            setAllowMassDelete(false, for: profileId)
+            if let tabId = session.tabId { tabLog(tabId, L10n.logMassAllowReset) }
+        }
         let port = session.runner.port
         if sessions[port] === session {
             sessions[port] = nil
         }
         let now = Date()
 
+        if conflictPrompt?.sessionToken == session.token {
+            // der Palm ist weg, bevor die Konflikte entschieden waren
+            conflictPrompt = nil
+            conflictAnswer = nil
+            if let tabId = session.tabId { tabLog(tabId, L10n.logTwoWayAskAbandoned) }
+        }
         // Der Palm ist weg, bevor der Benutzer im Dialog geantwortet hat
         if session.awaitingDecision, let user = session.user {
             if newPalmPrompt?.sessionToken == session.token {
@@ -1043,7 +2238,7 @@ final class AppState {
         } else if session.stopRequested {
             result = .stopped(date: now)
         } else if session.timedOut {
-            result = .timedOut(date: now)
+            if case .listener = session.purpose { result = nil } else { result = .timedOut(date: now) }
         } else if let message = session.errorMessage {
             result = .failed(date: now, message: message)
         } else {
@@ -1134,7 +2329,7 @@ final class AppState {
     // MARK: - Log
 
     func portLabel(_ port: String) -> String {
-        port == SyncTab.usbPort ? "USB" : (port as NSString).lastPathComponent
+        SyncTab.label(port)
     }
 
     private static let timeFormatter: DateFormatter = {

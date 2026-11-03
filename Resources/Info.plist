@@ -9,9 +9,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.palm.hotsync.macos</string>
     <key>CFBundleVersion</key>
-    <string>1.2.2</string>
+    <string>1.3.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.2</string>
+    <string>1.3.0</string>
     <key>CFBundleExecutable</key>
     <string>HotSync</string>
     <key>CFBundlePackageType</key>
@@ -26,6 +26,13 @@
     <string>14.0</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <!-- PIM sync: the Mac's calendars go onto the Palm -->
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>HotSync reads the calendars you choose to put them on your Palm.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>HotSync reads the Reminders lists you choose to put them on your Palm as tasks.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>HotSync reads the contacts of the accounts you choose to put them on your Palm.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

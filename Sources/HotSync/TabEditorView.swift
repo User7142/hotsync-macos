@@ -30,12 +30,35 @@ struct TabEditorView: View {
                         Text(serialLabel(port)).tag(port.id)
                     }
                     // ein gespeicherter Adapter, der gerade nicht steckt
-                    if !draft.isUSB && appState.portMonitor.serialPort(draft.port) == nil {
+                    if draft.isSerial && appState.portMonitor.serialPort(draft.port) == nil {
                         Text(L10n.tabPortMissing(draft.portLabel)).tag(draft.port)
                     }
+                    Divider()
+                    // Netzwerk: je Schnittstelle, WLAN zuerst; alle nur ausdrücklich
+                    ForEach(addresses, id: \.interface) { address in
+                        Text(L10n.portNetworkInterface(address.interface == LocalAddress.wifiInterface ? "Wi-Fi" : address.interface, address.ip))
+                            .tag(SyncTab.networkPort(interface: address.interface))
+                    }
+                    if let interface = draft.networkInterface, interface != SyncTab.networkAll,
+                       !addresses.contains(where: { $0.interface == interface }) {
+                        Text(L10n.tabPortMissing("Network (\(interface))")).tag(draft.port)
+                    }
+                    Text(L10n.portNetworkAll).tag(SyncTab.networkPort)
                 }
+                if draft.isNetwork {
+                    let address = draft.networkInterface == SyncTab.networkAll ? addresses.first
+                        : addresses.first { $0.interface == draft.networkInterface }
+                    Text(L10n.portNetworkHint(address?.ip, all: draft.networkInterface == SyncTab.networkAll))
+                        .font(.caption)
+                        .foregroundStyle(draft.networkInterface == SyncTab.networkAll ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(L10n.tabPortsHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                if !draft.isUSB {
+                if draft.isSerial {
                     Picker(L10n.tabBaudRate, selection: $draft.baudRate) {
                         ForEach(SyncTab.baudRates, id: \.self) { rate in
                             Text("\(rate)").tag(rate)
@@ -49,12 +72,10 @@ struct TabEditorView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Picker(L10n.tabSyncMode, selection: Binding(
-                    get: { draft.isFullSync },
-                    set: { draft.fullSync = $0 }
-                )) {
-                    Text(L10n.tabSyncModeFull).tag(true)
-                    Text(L10n.tabSyncModeInstall).tag(false)
+                Picker(L10n.tabSyncMode, selection: $draft.hotSyncMode) {
+                    ForEach(HotSyncMode.allCases, id: \.self) { mode in
+                        Text(L10n.modeName(mode)).tag(mode)
+                    }
                 }
                 Text(L10n.tabSyncModeHint)
                     .font(.caption)
@@ -104,6 +125,9 @@ struct TabEditorView: View {
     }
 
     /// Derselbe Palm am selben Anschluss als zweiter Tab ergibt keinen Sinn.
+    /// Die Netzwerkschnittstellen dieses Macs, WLAN zuerst.
+    private var addresses: [LocalAddress.Address] { LocalAddress.ipv4() }
+
     private var duplicate: SyncTab? {
         appState.tabStore.tabs.first {
             $0.id != draft.id && $0.profileId == draft.profileId && $0.port == draft.port

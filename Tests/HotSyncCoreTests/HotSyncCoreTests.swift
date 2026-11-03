@@ -139,6 +139,45 @@ private func imageWithVersion(_ version: String?) -> Data {
     #expect(SessionEvent.parse(#"{"event":"backupStarted"}"#) == nil)
 }
 
+@Test func recordEvents() {
+    #expect(SessionEvent.parse(#"{"event":"syncInfo","lastSyncPC":305419896,"lastSyncDate":1792368000,"successfulSyncDate":1792368000}"#)
+            == .syncInfo(lastSyncPC: 0x12345678, lastSyncDate: Date(timeIntervalSince1970: 1_792_368_000)))
+    // never synced: the Palm reports 0 and the 1904 epoch
+    #expect(SessionEvent.parse(#"{"event":"syncInfo","lastSyncPC":0,"lastSyncDate":-2082844800}"#)
+            == .syncInfo(lastSyncPC: 0, lastSyncDate: nil))
+    #expect(SessionEvent.parse(#"{"event":"dbOpened","name":"CalendarDB-PDat","records":72}"#)
+            == .dbOpened(name: "CalendarDB-PDat", records: 72))
+    #expect(SessionEvent.parse(#"{"event":"dbClosed"}"#) == .dbClosed)
+    #expect(SessionEvent.parse(#"{"event":"appInfo","data":"AAEC"}"#) == .appInfo(Data([0, 1, 2])))
+    #expect(SessionEvent.parse(#"{"event":"appInfoWritten","bytes":298}"#) == .appInfoWritten(bytes: 298))
+    // attrs come with the flags only; a deleted record has no data
+    #expect(SessionEvent.parse(#"{"event":"record","id":4097,"index":0,"attrs":64,"category":2,"data":"CQAKAA=="}"#)
+            == .record(id: 0x1001, index: 0, attributes: 0x40, category: 2, data: Data([9, 0, 10, 0])))
+    #expect(SessionEvent.parse(#"{"event":"record","id":4098,"index":1,"attrs":192,"category":0,"data":""}"#)
+            == .record(id: 0x1002, index: 1, attributes: 0xC0, category: 0, data: Data()))
+    // archived (0x08) is a flag on the wire, not part of the category
+    #expect(SessionEvent.parse(#"{"event":"record","id":4100,"index":2,"attrs":136,"category":3,"data":""}"#)
+            == .record(id: 0x1004, index: 2, attributes: 0x88, category: 3, data: Data()))
+    #expect(SessionEvent.parse(#"{"event":"recordsDone","count":2,"modifiedOnly":1}"#)
+            == .recordsDone(count: 2, modifiedOnly: true))
+    #expect(SessionEvent.parse(#"{"event":"recordWritten","id":4099,"bytes":16}"#) == .recordWritten(id: 4099, bytes: 16))
+    #expect(SessionEvent.parse(#"{"event":"recordDeleted","id":4099}"#) == .recordDeleted(id: 4099))
+    #expect(SessionEvent.parse(#"{"event":"flagsReset"}"#) == .flagsReset)
+    #expect(SessionEvent.parse(#"{"event":"cleanedUp"}"#) == .cleanedUp)
+    #expect(SessionEvent.parse(#"{"event":"syncInfoWritten","pcId":305419896,"date":1792368000}"#)
+            == .syncInfoWritten(pcId: 0x12345678, date: Date(timeIntervalSince1970: 1_792_368_000)))
+    #expect(SessionEvent.parse(#"{"event":"timeSet","date":1792368000}"#) == .timeSet(Date(timeIntervalSince1970: 1_792_368_000)))
+    #expect(SessionEvent.parse(#"{"event":"netSyncSet","address":"192.168.0.101","name":"Zoë’s Mac"}"#)
+            == .netSyncSet(address: "192.168.0.101", name: "Zoë’s Mac"))
+    // a record without its data or id, or with broken base64, is not a record
+    #expect(SessionEvent.parse(#"{"event":"record","id":1,"attrs":0}"#) == nil)
+    #expect(SessionEvent.parse(#"{"event":"record","id":1,"data":"@@"}"#) == nil)
+    #expect(SessionEvent.parse(#"{"event":"recordWritten","bytes":3}"#) == nil)
+    // a DLP failure keeps the raw codes next to the stage
+    #expect(SessionEvent.parse(#"{"event":"error","stage":"writerec","message":"cannot write the record","error":-301,"palmOSError":5}"#)
+            == .error(stage: "writerec", message: "cannot write the record"))
+}
+
 @Test func brokenLines() {
     #expect(SessionEvent.parse("Thank you for using pilot-link.") == nil)
     #expect(SessionEvent.parse(#"{"event":"connected"}"#) == nil)
@@ -149,6 +188,8 @@ private func imageWithVersion(_ version: String?) -> Data {
     // Windows-1252 from the Palm arrives as UTF-8 escaped by the tool
     #expect(SessionEvent.parse(#"{"event":"connected","user":"M\u00fcller \u20ac","userId":7}"#)
             == .connected(PalmUser(name: "Müller €", userId: 7), romVersion: 0))
+    #expect(SessionEvent.parse(#"{"event":"connected","user":"Z","userId":1,"romVersion":0,"dateFixStartYear":1932}"#)
+            == .connected(PalmUser(name: "Z", userId: 1), romVersion: 0, dateFixStartYear: 1932))
 }
 
 // MARK: - PalmAdmission

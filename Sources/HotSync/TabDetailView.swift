@@ -14,24 +14,48 @@ struct TabDetailView: View {
     var body: some View {
         VStack(spacing: 12) {
             header
-            if let status = appState.status(tab.id) {
-                if status.isSyncing || status.lastResult != nil || status.lastBackup != nil
-                    || status.lastRestore != nil || status.lastROMDump != nil {
-                    resultBox(status)
+                .padding([.horizontal, .top])
+            // Der Kopf bleibt stehen, der Rest rollt: mit den Abgleich-
+            // Abschnitten passt nicht mehr alles ins Fenster. Der Rand liegt
+            // am Inhalt, nicht am ScrollView, damit der Rollbalken am
+            // Fensterrand sitzt.
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let status = appState.status(tab.id) {
+                        if status.isSyncing || status.lastResult != nil || status.lastBackup != nil
+                            || status.lastRestore != nil || status.lastROMDump != nil {
+                            resultBox(status)
+                        }
+                    }
+                    if palmOS?.hasGarnetPIM ?? true {
+                        DryRunSection(profileId: tab.profileId)
+                        CalendarSyncSection(profileId: tab.profileId)
+                        ContactSyncSection(profileId: tab.profileId)
+                        TaskSyncSection(profileId: tab.profileId)
+                        TimeSyncSection(profileId: tab.profileId)
+                    } else if let os = palmOS {
+                        // Datebook/Address/ToDo-Geräte: kein Abgleich, keine Zeitzonen, nur die Uhr
+                        GroupBox {
+                            Text(L10n.palmOSTooOld(os.description))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(4)
+                        }
+                    }
+                    if let queue = appState.queue(for: tab) {
+                        QueueSection(queue: queue, profileId: tab.profileId,
+                                     isSyncing: appState.status(tab.id)?.isSyncing == true)
+                        InstalledSection(queue: queue)
+                    }
+                    if let status = appState.status(tab.id) {
+                        TabLogSection(log: status.log)
+                            .frame(height: 260)
+                    }
                 }
-            }
-            if let queue = appState.queue(for: tab) {
-                QueueSection(queue: queue, profileId: tab.profileId,
-                             isSyncing: appState.status(tab.id)?.isSyncing == true)
-                InstalledSection(queue: queue)
-            }
-            if let status = appState.status(tab.id) {
-                // Das Log bekommt den restlichen Platz im Fenster
-                TabLogSection(log: status.log)
-                    .frame(maxHeight: .infinity)
+                .padding([.horizontal, .bottom])
             }
         }
-        .padding()
         .frame(maxHeight: .infinity, alignment: .top)
         .alert(L10n.restoreConfirmTitle, isPresented: $confirmRestore) {
             Button(L10n.cancel, role: .cancel) {}
@@ -45,14 +69,7 @@ struct TabDetailView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(phaseColor.opacity(0.2))
-                    .frame(width: 36, height: 36)
-                Image(systemName: phaseIcon)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(phaseColor)
-            }
+            SyncLogo(phase: phase, color: phaseColor, icon: phaseIcon)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(appState.title(of: tab))
@@ -83,21 +100,23 @@ struct TabDetailView: View {
                     .foregroundStyle(.secondary)
                 Menu {
                     Picker("", selection: Binding(
-                        get: { tab.isFullSync },
-                        set: { appState.setFullSync($0, for: tab.id) }
+                        get: { tab.hotSyncMode },
+                        set: { appState.setMode($0, for: tab.id) }
                     )) {
-                        Text(L10n.tabSyncModeFullShort).tag(true)
-                        Text(L10n.tabSyncModeInstallShort).tag(false)
+                        ForEach(HotSyncMode.allCases, id: \.self) { mode in
+                            Text(L10n.modeName(mode)).tag(mode)
+                        }
                     }
                     .pickerStyle(.inline)
                     .labelsHidden()
                     if appState.tabStore.tabs.count > 1 {
                         Divider()
-                        Button(L10n.allTabsSyncMode(full: true)) { appState.setFullSyncForAllTabs(true) }
-                        Button(L10n.allTabsSyncMode(full: false)) { appState.setFullSyncForAllTabs(false) }
+                        ForEach(HotSyncMode.allCases, id: \.self) { mode in
+                            Button(L10n.allTabsMode(mode)) { appState.setModeForAllTabs(mode) }
+                        }
                     }
                 } label: {
-                    Text(tab.isFullSync ? L10n.tabSyncModeFullShort : L10n.tabSyncModeInstallShort)
+                    Text(L10n.modeName(tab.hotSyncMode))
                 }
                 .menuStyle(.button)
                 .fixedSize()
@@ -200,7 +219,7 @@ struct TabDetailView: View {
 
     private var phaseColor: Color {
         switch phase {
-        case .restoring, .syncing, .backingUp, .dumpingROM: return .blue
+        case .restoring, .syncing, .backingUp, .readingCalendar, .dumpingROM: return .blue
         case .listening: return .green
         case .waitingForPort: return .orange
         case .idle: return .gray
@@ -212,6 +231,7 @@ struct TabDetailView: View {
         case .syncing: return "arrow.triangle.2.circlepath"
         case .restoring: return "arrow.counterclockwise.circle"
         case .backingUp: return "externaldrive.badge.timemachine"
+        case .readingCalendar: return "calendar"
         case .dumpingROM: return "memorychip"
         case .listening: return "antenna.radiowaves.left.and.right"
         case .waitingForPort: return "hourglass"
@@ -228,6 +248,8 @@ struct TabDetailView: View {
             return L10n.phaseRestoring(user.name, done, total, file)
         case .backingUp(let user, let file, let done, let total):
             return L10n.phaseBackingUp(user.name, done, total, file)
+        case .readingCalendar(let user, let database, let done):
+            return L10n.phaseReadingCalendar(user.name, database, done)
         case .dumpingROM(let user, let done, let total):
             return L10n.phaseDumpingROM(user.name, done, total)
         case .listening:
@@ -245,7 +267,11 @@ struct TabDetailView: View {
     /// sich zuletzt gemeldet hat.
     private var portText: String {
         var parts: [String] = []
-        if !tab.isUSB {
+        if let interface = tab.networkInterface {
+            let address = interface == SyncTab.networkAll ? LocalAddress.ipv4().first : LocalAddress.address(ofInterface: interface)
+            parts.append(L10n.portNetworkAddress(address?.ip))
+        }
+        if tab.isSerial {
             if let serial = appState.portMonitor.serialPort(tab.port) {
                 parts.append(serial.connectedAt.map {
                     L10n.portConnectedAt($0.formatted(date: .omitted, time: .shortened))
@@ -673,6 +699,142 @@ struct TabLogSection: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+        }
+    }
+}
+
+/// Das HotSync-Logo im Kopf des Tabs: die beiden Pfeile drehen sich,
+/// solange ein HotSync läuft; sonst stehen sie, und ein kleines Abzeichen
+/// zeigt den Zustand (lauschen, Anschluss fehlt, …).
+struct SyncLogo: View {
+    let phase: TabStatus.Phase
+    let color: Color
+    let icon: String
+
+    @State private var spinning = false
+
+    private static let image: NSImage? = Bundle.main.url(forResource: "HotSyncLogo", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
+
+    private var isSyncing: Bool {
+        switch phase {
+        case .restoring, .syncing, .backingUp, .readingCalendar, .dumpingROM: return true
+        default: return false
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if let image = Self.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 36, height: 36)
+                    .opacity(isSyncing ? 1 : 0.55)
+                    .rotationEffect(.degrees(spinning ? 360 : 0))
+                    .animation(spinning ? .linear(duration: 1.6).repeatForever(autoreverses: false) : .default,
+                               value: spinning)
+            } else {
+                Circle()
+                    .fill(color.opacity(0.2))
+                    .frame(width: 36, height: 36)
+            }
+            if !isSyncing {
+                Image(systemName: icon)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(3)
+                    .background(Circle().fill(color))
+                    .offset(x: 4, y: 4)
+            }
+        }
+        .frame(width: 40, height: 40)
+        .onAppear { spinning = isSyncing }
+        .onChange(of: isSyncing) { _, now in spinning = now }
+    }
+}
+
+/// Probelauf für alle Abgleiche eines Profils: ein Schalter über den
+/// Abschnitten, damit er nicht übersehen wird.
+struct DryRunSection: View {
+    @Environment(AppState.self) var appState
+    let profileId: UUID
+
+    var body: some View {
+        let on = appState.deviceManager.profile(profileId)?.isDryRun ?? false
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: Binding(
+                    get: { appState.deviceManager.profile(profileId)?.isDryRun ?? false },
+                    set: { appState.setDryRun($0, for: profileId) }
+                )) {
+                    Text(L10n.dryRunToggle)
+                }
+                Text(L10n.dryRunHint)
+                    .font(.caption)
+                    .foregroundStyle(on ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle(isOn: Binding(
+                    get: { appState.deviceManager.profile(profileId)?.isMassDeleteAllowed ?? false },
+                    set: { appState.setAllowMassDelete($0, for: profileId) }
+                )) {
+                    Text(L10n.massDeleteToggle)
+                }
+                Text(L10n.massDeleteHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        } label: {
+            Label(L10n.dryRunTitle, systemImage: "eye")
+        }
+    }
+}
+
+/// Uhr und Zeitzonen: zwei Schalter je Profil.
+struct TimeSyncSection: View {
+    @Environment(AppState.self) var appState
+    let profileId: UUID
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: Binding(
+                    get: { appState.deviceManager.profile(profileId)?.isClockSyncOn ?? false },
+                    set: { appState.setClockSync($0, for: profileId) }
+                )) {
+                    Text(L10n.clockSyncToggle)
+                }
+                Text(L10n.clockSyncHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(isOn: Binding(
+                    get: { appState.deviceManager.profile(profileId)?.isZoneSyncOn ?? false },
+                    set: { appState.setZoneSync($0, for: profileId) }
+                )) {
+                    Text(L10n.zoneSyncToggle)
+                }
+                Text(L10n.zoneSyncHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle(isOn: Binding(
+                    get: { appState.deviceManager.profile(profileId)?.isNetSyncOn ?? false },
+                    set: { appState.setNetSync($0, for: profileId) }
+                )) {
+                    Text(L10n.netSyncToggle)
+                }
+                Text(L10n.netSyncHint(LocalAddress.ipv4().first?.ip, LocalAddress.computerName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)   // so breit wie die anderen Abschnitte
+            .padding(4)
+        } label: {
+            Label(L10n.timeSyncTitle, systemImage: "clock")
         }
     }
 }

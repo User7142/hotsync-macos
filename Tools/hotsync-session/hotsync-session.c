@@ -23,6 +23,22 @@
  *                              (nur die seit der letzten Sicherung geänderten)
  *             getrom <Ordner>  das ROM nach <Ordner>/PalmOS-<Version>.rom
  *                              auslesen (nur Palm OS 1-4)
+ *           Datensätze einer Datenbank (für den PIM-Abgleich, immer genau
+ *           eine Datenbank offen; Daten als Base64, Attribute wie dlpRecAttr*):
+ *             opendb <r|rw> <Name>   Datenbank öffnen (geheime Datensätze inklusive)
+ *             closedb                 wieder schließen
+ *             readappinfo             AppInfo-Block lesen
+ *             writeappinfo <Base64>   AppInfo-Block schreiben
+ *             readall                 alle Datensätze lesen (langsamer Abgleich)
+ *             readmodified            nur die seit dem letzten Abgleich geänderten
+ *             readrec <ID>            einen Datensatz lesen
+ *             writerec <ID> <Attr> <Kategorie> <Base64>
+ *                                     schreiben (ID 0: der Palm vergibt eine)
+ *             deleterec <ID>          löschen
+ *             resetflags              Änderungsmarken löschen (nach dem Abgleich)
+ *             cleanup                 gelöschte Datensätze endgültig entfernen
+ *             syncinfo <PC-ID>        lastSyncPC und Abgleichzeit im Palm setzen
+ *             settime                 die Uhr des Palms auf die des Macs stellen
  *             end              Sitzung sauber beenden
  *
  * Exit:     0 Sitzung beendet, 1 Fehler, 2 kein Palm innerhalb des Timeouts
@@ -31,11 +47,13 @@
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <utime.h>
 #include <unistd.h>
 
@@ -618,9 +636,15 @@ static void get_rom(int sd, const char *dir)
 
 /* ---- Sitzung ------------------------------------------------------------ */
 
+/* Für net: - libpisocks accept() kennt kein Timeout. Ein Wecker unterbricht
+ * es (EINTR, ohne SA_RESTART), und das zählt dann als Timeout. */
+static volatile sig_atomic_t accept_alarm_fired = 0;
+static void accept_alarm(int signo) { (void)signo; accept_alarm_fired = 1; }
+
 static int connect_palm(const char *port, int timeout)
 {
 	int listen_sd, sd;
+	int is_net = strncmp(port, "net:", 4) == 0;
 
 	listen_sd = pi_socket(PI_AF_PILOT, PI_SOCK_STREAM, PI_PF_DLP);
 	if (listen_sd < 0) {
@@ -648,7 +672,24 @@ static int connect_palm(const char *port, int timeout)
 	 *   und lässt den Listener offen.
 	 * - seriell: PI_ERR_SOCK_TIMEOUT; bei negativen Werten hat pi_accept_to
 	 *   den Listener schon selbst geschlossen. */
+	if (is_net && timeout > 0) {
+		struct sigaction sa;
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_handler = accept_alarm;
+		sigaction(SIGALRM, &sa, NULL);
+		accept_alarm_fired = 0;
+		alarm((unsigned)timeout);
+	}
 	sd = pi_accept_to(listen_sd, NULL, NULL, timeout);
+	if (is_net && timeout > 0) {
+		alarm(0);
+		if (sd < 0 && accept_alarm_fired) {
+			pi_close(listen_sd);
+			emit_begin("timeout");
+			emit_end();
+			return -2;
+		}
+	}
 	if (sd == 0) {
 		pi_close(listen_sd);
 		emit_begin("timeout");
@@ -691,6 +732,31 @@ static int report_identity(int sd)
 	emit_str("user", user.username, 1);
 	emit_int("userId", (long)user.userID);
 	emit_int("romVersion", (long)sys.romVersion);
+	/* DateFix (Epoche verschoben, damit der Palm nach 2031 weiterläuft):
+	 * seine Einstellung ist 6 Bytes - Version(2) Startjahr(2) an(1)
+	 * laufende Umstellung(1). Ist es an, sieht der HotSync alle Daten um
+	 * Startjahr - 1904 Jahre verschoben, und die Uhr ebenso. */
+	{
+		unsigned char pref[16];
+		size_t size = 0;
+		int version = 0;
+		if (dlp_ReadAppPreference(sd, 0x44744678UL /* 'DtFx' */, 0, 1, sizeof(pref), pref, &size, &version) >= 0
+		    && size == 6 && version == 2 && pref[4] != 0) {
+			int year = (pref[2] << 8) | pref[3];
+			/* DateFix erlaubt 1904 … 1972 in Viererschritten; alles andere ist kaputt */
+			if (year >= 1904 && year <= 1972 && (year - 1904) % 4 == 0)
+				emit_int("dateFixStartYear", (long)year);
+		}
+	}
+	emit_end();
+
+	/* Für den Abgleich: welcher PC zuletzt abgeglichen hat (0: keiner oder
+	 * unbekannt) und wann. Weicht die PC-ID von der eigenen ab, taugen die
+	 * Änderungsmarken des Palms nicht - dann langsamer Abgleich. */
+	emit_begin("syncInfo");
+	emit_int("lastSyncPC", (long)user.lastSyncPC);
+	emit_int("lastSyncDate", (long)user.lastSyncDate);
+	emit_int("successfulSyncDate", (long)user.successfulSyncDate);
 	emit_end();
 	return 0;
 }
@@ -725,6 +791,448 @@ static void write_user(int sd, const char *args)
 	emit_end();
 }
 
+/* ---- Datensätze (PIM-Abgleich) ------------------------------------------ */
+
+/* Die App (PalmSync) entscheidet alles; hier läuft nur DLP: eine Datenbank
+ * öffnen, Datensätze und AppInfo-Block lesen und schreiben, Marken
+ * zurücksetzen. Datensatzinhalte gehen als Base64 durch die JSON-Zeilen und
+ * werden hier nie interpretiert. Es ist immer höchstens eine Datenbank offen. */
+
+static int open_db = -1;		/* DLP-Handle der offenen Datenbank */
+static char open_db_name[34];
+
+static const char base64_chars[] =
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* Schreibt den Wert eines JSON-Felds als Base64 (ohne Zeilenumbrüche) */
+static void emit_base64(const char *key, const unsigned char *data, size_t len)
+{
+	size_t i;
+
+	printf(",\"%s\":\"", key);
+	for (i = 0; i + 2 < len; i += 3) {
+		unsigned int v = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+		putchar(base64_chars[(v >> 18) & 63]);
+		putchar(base64_chars[(v >> 12) & 63]);
+		putchar(base64_chars[(v >> 6) & 63]);
+		putchar(base64_chars[v & 63]);
+	}
+	if (i < len) {
+		unsigned int v = data[i] << 16;
+		if (i + 1 < len)
+			v |= data[i + 1] << 8;
+		putchar(base64_chars[(v >> 18) & 63]);
+		putchar(base64_chars[(v >> 12) & 63]);
+		putchar(i + 1 < len ? base64_chars[(v >> 6) & 63] : '=');
+		putchar('=');
+	}
+	putchar('"');
+}
+
+/* Base64 nach <out>; -1, wenn der Text kein Base64 ist oder nicht passt */
+static long decode_base64(const char *in, unsigned char *out, size_t out_size)
+{
+	unsigned int v = 0;
+	int bits = 0;
+	size_t n = 0;
+
+	for (; *in && *in != '='; in++) {
+		const char *p = strchr(base64_chars, *in);
+
+		if (p == NULL || *in == '\0')
+			return -1;
+		v = (v << 6) | (unsigned int)(p - base64_chars);
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			if (n >= out_size)
+				return -1;
+			out[n++] = (unsigned char)((v >> bits) & 0xFF);
+		}
+	}
+	return (long)n;
+}
+
+/* Fehler eines DLP-Aufrufs mit den Rohcodes, wie bei backupFailed */
+static void emit_dlp_error(int sd, const char *stage, const char *what)
+{
+	emit_begin("error");
+	emit_str("stage", stage, 0);
+	emit_str("message", what, 0);
+	emit_int("error", pi_error(sd));
+	emit_int("palmOSError", pi_palmos_error(sd));
+	emit_end();
+}
+
+static int require_open_db(const char *stage)
+{
+	if (open_db < 0) {
+		emit_error(stage, "no database open (opendb first)");
+		return 0;
+	}
+	return 1;
+}
+
+/* "opendb <r|rw> <Name>": geheime Datensätze immer mit, sonst fehlen sie
+ * im Abgleich und würden beim nächsten Schreiben verloren gehen. */
+static void open_database(int sd, const char *args)
+{
+	int mode;
+	const char *name;
+	int records = 0;
+
+	if (strncmp(args, "r ", 2) == 0) {
+		mode = dlpOpenRead | dlpOpenSecret;
+		name = args + 2;
+	} else if (strncmp(args, "rw ", 3) == 0) {
+		mode = dlpOpenReadWrite | dlpOpenSecret;
+		name = args + 3;
+	} else {
+		emit_error("opendb", "usage: opendb <r|rw> <name>");
+		return;
+	}
+	if (open_db >= 0) {
+		dlp_CloseDB(sd, open_db);
+		open_db = -1;
+	}
+	utf8_to_cp1252(name, open_db_name, sizeof(open_db_name));
+	if (dlp_OpenDB(sd, 0, mode, open_db_name, &open_db) < 0) {
+		open_db = -1;
+		emit_dlp_error(sd, "opendb", "cannot open the database");
+		return;
+	}
+	if (dlp_ReadOpenDBInfo(sd, open_db, &records) < 0)
+		records = -1;
+
+	emit_begin("dbOpened");
+	emit_str("name", open_db_name, 1);
+	emit_int("records", records);
+	emit_end();
+}
+
+static void close_database(int sd)
+{
+	if (!require_open_db("closedb"))
+		return;
+	/* entweder Fehler oder dbClosed, nie beides: die App geht bei jedem weiter */
+	if (dlp_CloseDB(sd, open_db) < 0) {
+		emit_dlp_error(sd, "closedb", "cannot close the database");
+		open_db = -1;
+		return;
+	}
+	open_db = -1;
+	emit_begin("dbClosed");
+	emit_end();
+}
+
+static void read_app_info(int sd)
+{
+	pi_buffer_t *buf;
+
+	if (!require_open_db("readappinfo"))
+		return;
+	buf = pi_buffer_new(0xFFFF);
+	if (dlp_ReadAppBlock(sd, open_db, 0, DLP_BUF_SIZE, buf) < 0) {
+		emit_dlp_error(sd, "readappinfo", "cannot read the AppInfo block");
+	} else {
+		emit_begin("appInfo");
+		emit_base64("data", buf->data, buf->used);
+		emit_end();
+	}
+	pi_buffer_free(buf);
+}
+
+static void write_app_info(int sd, const char *args)
+{
+	unsigned char data[0xFFFF];
+	long len = decode_base64(args, data, sizeof(data));
+
+	if (!require_open_db("writeappinfo"))
+		return;
+	if (len < 0) {
+		emit_error("writeappinfo", "usage: writeappinfo <base64>");
+		return;
+	}
+	if (dlp_WriteAppBlock(sd, open_db, data, (size_t)len) < 0) {
+		emit_dlp_error(sd, "writeappinfo", "cannot write the AppInfo block");
+		return;
+	}
+	emit_begin("appInfoWritten");
+	emit_int("bytes", len);
+	emit_end();
+}
+
+static void emit_record(recordid_t id, int index, int attrs, int category, const pi_buffer_t *buf)
+{
+	emit_begin("record");
+	emit_int("id", (long)id);
+	emit_int("index", index);
+	/* alle Marken, auch "archiviert" (0x08): auf dem Draht sind Marken und
+	 * Kategorie getrennt, anders als in der Datei */
+	emit_int("attrs", attrs & 0xF8);
+	emit_int("category", category & 0x0F);
+	emit_base64("data", buf->data, buf->used);
+	emit_end();
+}
+
+/* "readall": jeden Datensatz nach Index - der langsame Abgleich, wenn die
+ * Änderungsmarken nichts taugen. "readmodified": nur die seit dem letzten
+ * Abgleich geänderten (auch gelöschte, dann ohne Daten). Zum Schluss
+ * recordsDone mit der Anzahl. */
+static void read_records(int sd, int modified_only)
+{
+	const char *stage = modified_only ? "readmodified" : "readall";
+	pi_buffer_t *buf;
+	int count = 0, total = 0, index;
+	recordid_t id;
+	int attrs, category;
+
+	if (!require_open_db(stage))
+		return;
+	buf = pi_buffer_new(0xFFFF);
+
+	if (modified_only) {
+		for (;;) {
+			int result = dlp_ReadNextModifiedRec(sd, open_db, buf, &id, &index, &attrs, &category);
+
+			if (result < 0) {
+				/* das Ende meldet der Palm als "nicht gefunden" */
+				if (!(pi_error(sd) == PI_ERR_DLP_PALMOS && pi_palmos_error(sd) == dlpErrNotFound)) {
+					emit_dlp_error(sd, stage, "cannot read the next modified record");
+					pi_buffer_free(buf);
+					return;
+				}
+				break;
+			}
+			emit_record(id, index, attrs, category, buf);
+			count++;
+			if (!pi_socket_connected(sd)) {
+				emit_error(stage, "connection lost while reading records");
+				pi_buffer_free(buf);
+				return;
+			}
+		}
+	} else {
+		if (dlp_ReadOpenDBInfo(sd, open_db, &total) < 0) {
+			emit_dlp_error(sd, stage, "cannot count the records");
+			pi_buffer_free(buf);
+			return;
+		}
+		for (index = 0; index < total; index++) {
+			if (dlp_ReadRecordByIndex(sd, open_db, index, buf, &id, &attrs, &category) < 0) {
+				emit_dlp_error(sd, stage, "cannot read a record");
+				pi_buffer_free(buf);
+				return;
+			}
+			emit_record(id, index, attrs, category, buf);
+			count++;
+			if (!pi_socket_connected(sd)) {
+				emit_error(stage, "connection lost while reading records");
+				pi_buffer_free(buf);
+				return;
+			}
+		}
+	}
+	pi_buffer_free(buf);
+
+	emit_begin("recordsDone");
+	emit_int("count", count);
+	emit_int("modifiedOnly", modified_only);
+	emit_end();
+}
+
+static void read_record(int sd, const char *args)
+{
+	char *end;
+	unsigned long id = strtoul(args, &end, 10);
+	pi_buffer_t *buf;
+	int index, attrs, category;
+
+	if (!require_open_db("readrec"))
+		return;
+	if (end == args) {
+		emit_error("readrec", "usage: readrec <id>");
+		return;
+	}
+	buf = pi_buffer_new(0xFFFF);
+	if (dlp_ReadRecordById(sd, open_db, (recordid_t)id, buf, &index, &attrs, &category) < 0)
+		emit_dlp_error(sd, "readrec", "cannot read the record");
+	else
+		emit_record((recordid_t)id, index, attrs, category, buf);
+	pi_buffer_free(buf);
+}
+
+/* "writerec <ID> <Attr> <Kategorie> <Base64>": ID 0 lässt den Palm eine
+ * vergeben; die vergebene kommt in recordWritten zurück. */
+static void write_record(int sd, const char *args)
+{
+	char *end;
+	unsigned long id, attrs, category;
+	unsigned char data[0xFFFF];
+	long len;
+	recordid_t new_id = 0;
+
+	if (!require_open_db("writerec"))
+		return;
+	id = strtoul(args, &end, 10);
+	if (end == args || *end != ' ')
+		goto usage;
+	attrs = strtoul(end + 1, &end, 10);
+	if (*end != ' ')
+		goto usage;
+	category = strtoul(end + 1, &end, 10);
+	if (*end != ' ')
+		goto usage;
+	len = decode_base64(end + 1, data, sizeof(data));
+	if (len < 0)
+		goto usage;
+
+	if (dlp_WriteRecord(sd, open_db, (int)(attrs & 0xF8), (recordid_t)id, (int)(category & 0x0F),
+			    data, (size_t)len, &new_id) < 0) {
+		emit_dlp_error(sd, "writerec", "cannot write the record");
+		return;
+	}
+	emit_begin("recordWritten");
+	emit_int("id", (long)new_id);
+	emit_int("bytes", len);
+	emit_end();
+	return;
+
+usage:
+	emit_error("writerec", "usage: writerec <id> <attrs> <category> <base64>");
+}
+
+static void delete_record(int sd, const char *args)
+{
+	char *end;
+	unsigned long id = strtoul(args, &end, 10);
+
+	if (!require_open_db("deleterec"))
+		return;
+	if (end == args || id == 0) {
+		emit_error("deleterec", "usage: deleterec <id>");
+		return;
+	}
+	if (dlp_DeleteRecord(sd, open_db, 0, (recordid_t)id) < 0) {
+		emit_dlp_error(sd, "deleterec", "cannot delete the record");
+		return;
+	}
+	emit_begin("recordDeleted");
+	emit_int("id", (long)id);
+	emit_end();
+}
+
+static void reset_flags(int sd)
+{
+	if (!require_open_db("resetflags"))
+		return;
+	if (dlp_ResetSyncFlags(sd, open_db) < 0) {
+		emit_dlp_error(sd, "resetflags", "cannot reset the sync flags");
+		return;
+	}
+	emit_begin("flagsReset");
+	emit_end();
+}
+
+static void clean_up(int sd)
+{
+	if (!require_open_db("cleanup"))
+		return;
+	if (dlp_CleanUpDatabase(sd, open_db) < 0) {
+		emit_dlp_error(sd, "cleanup", "cannot clean up the database");
+		return;
+	}
+	emit_begin("cleanedUp");
+	emit_end();
+}
+
+/* "syncinfo <PC-ID>": merkt im Palm, welcher PC jetzt abgeglichen hat, und
+ * die Zeit - die Grundlage für den schnellen Abgleich beim nächsten Mal. */
+static void write_sync_info(int sd, const char *args)
+{
+	char *end;
+	unsigned long pc = strtoul(args, &end, 10);
+	struct PilotUser user = palm_user;
+	time_t now = time(NULL);
+
+	if (end == args || pc == 0) {
+		emit_error("syncinfo", "usage: syncinfo <pc-id>");
+		return;
+	}
+	user.lastSyncPC = pc;
+	user.lastSyncDate = now;
+	user.successfulSyncDate = now;
+	if (dlp_WriteUserInfo(sd, &user) < 0) {
+		emit_dlp_error(sd, "syncinfo", "cannot write the sync info");
+		return;
+	}
+	palm_user = user;
+	emit_begin("syncInfoWritten");
+	emit_int("pcId", (long)pc);
+	emit_int("date", (long)now);
+	emit_end();
+}
+
+/* "settime [JAHRE]": die Uhr des Palms auf die Ortszeit des Macs stellen,
+ * wie es der HotSync-Manager tat; libpisock rechnet time_t in die lokale
+ * Zeit um. JAHRE: um so viele Jahre zurück, für einen Palm mit DateFix -
+ * als Wanduhrzeit: derselbe Tag und dieselbe Uhrzeit wie jetzt, nur das
+ * Jahr anders. (Den Zeitpunkt selbst zurückzurechnen gäbe eine andere
+ * Stunde, wenn damals andere Sommerzeitregeln galten.) */
+static void set_time(int sd, long years_back)
+{
+	time_t now = time(NULL);
+
+	if (years_back > 0) {
+		struct tm local = *localtime(&now);
+		local.tm_year -= (int)years_back;
+		local.tm_isdst = -1;
+		now = mktime(&local);
+	}
+	if (dlp_SetSysDateTime(sd, now) < 0) {
+		emit_dlp_error(sd, "settime", "cannot set the clock");
+		return;
+	}
+	emit_begin("timeSet");
+	emit_int("date", (long)now);
+	emit_end();
+}
+
+/* "netsync ADRESSE MASKE NAME": diesen Mac als primären PC für den
+ * Netzwerk-HotSync in den Palm schreiben, wie es der HotSync-Manager bei
+ * jedem lokalen HotSync tat. Das LANSync-Flag bleibt, wie es war. */
+static void write_net_sync(int sd, const char *args)
+{
+	struct NetSyncInfo info;
+	char address[40], mask[40];
+	const char *p = args, *q;
+
+	memset(&info, 0, sizeof(info));
+	if (dlp_ReadNetSyncInfo(sd, &info) < 0)
+		memset(&info, 0, sizeof(info));
+
+	q = strchr(p, ' ');
+	if (!q) { emit_error("netsync", "usage: netsync ADDRESS MASK NAME"); return; }
+	snprintf(address, sizeof(address), "%.*s", (int)(q - p), p);
+	p = q + 1;
+	q = strchr(p, ' ');
+	if (!q) { emit_error("netsync", "usage: netsync ADDRESS MASK NAME"); return; }
+	snprintf(mask, sizeof(mask), "%.*s", (int)(q - p), p);
+	p = q + 1;
+
+	strncpy(info.hostAddress, address, sizeof(info.hostAddress) - 1);
+	strncpy(info.hostSubnetMask, mask, sizeof(info.hostSubnetMask) - 1);
+	utf8_to_cp1252(p, info.hostName, sizeof(info.hostName));
+	if (dlp_WriteNetSyncInfo(sd, &info) < 0) {
+		emit_dlp_error(sd, "netsync", "cannot write the network HotSync settings");
+		return;
+	}
+	emit_begin("netSyncSet");
+	emit_str("address", info.hostAddress, 0);
+	emit_str("name", info.hostName, 1);
+	emit_end();
+}
+
 /* Abstand der Lebenszeichen an den Palm, solange keine Anweisung kommt -
  * ohne sie bricht der Palm die Sitzung nach einer Weile ab. */
 #define TICKLE_INTERVAL_MS	5000
@@ -755,7 +1263,8 @@ static int wait_for_command(int sd)
  * Sitzung trotzdem sauber beendet, damit der Palm nicht hängen bleibt. */
 static void run_commands(int sd)
 {
-	char line[4096];
+	/* ein Datensatz (bis 64 KiB) als Base64 muss in eine Zeile passen */
+	static char line[100000];
 
 	/* ungepuffert: was poll() als lesbar meldet, liegt nicht schon in
 	 * einem stdio-Puffer, auf den poll() nicht schaut */
@@ -772,6 +1281,36 @@ static void run_commands(int sd)
 			get_rom(sd, line + 7);
 		} else if (strncmp(line, "setuser ", 8) == 0) {
 			write_user(sd, line + 8);
+		} else if (strncmp(line, "opendb ", 7) == 0) {
+			open_database(sd, line + 7);
+		} else if (strcmp(line, "closedb") == 0) {
+			close_database(sd);
+		} else if (strcmp(line, "readappinfo") == 0) {
+			read_app_info(sd);
+		} else if (strncmp(line, "writeappinfo ", 13) == 0) {
+			write_app_info(sd, line + 13);
+		} else if (strcmp(line, "readall") == 0) {
+			read_records(sd, 0);
+		} else if (strcmp(line, "readmodified") == 0) {
+			read_records(sd, 1);
+		} else if (strncmp(line, "readrec ", 8) == 0) {
+			read_record(sd, line + 8);
+		} else if (strncmp(line, "writerec ", 9) == 0) {
+			write_record(sd, line + 9);
+		} else if (strncmp(line, "deleterec ", 10) == 0) {
+			delete_record(sd, line + 10);
+		} else if (strcmp(line, "resetflags") == 0) {
+			reset_flags(sd);
+		} else if (strcmp(line, "cleanup") == 0) {
+			clean_up(sd);
+		} else if (strncmp(line, "syncinfo ", 9) == 0) {
+			write_sync_info(sd, line + 9);
+		} else if (strcmp(line, "settime") == 0) {
+			set_time(sd, 0);
+		} else if (strncmp(line, "settime ", 8) == 0) {
+			set_time(sd, atol(line + 8));
+		} else if (strncmp(line, "netsync ", 8) == 0) {
+			write_net_sync(sd, line + 8);
 		} else if (strncmp(line, "log ", 4) == 0) {
 			char entry[1024];
 			utf8_to_cp1252(line + 4, entry, sizeof(entry));
@@ -826,6 +1365,8 @@ int main(int argc, char **argv)
 
 	run_commands(sd);
 
+	if (open_db >= 0)
+		dlp_CloseDB(sd, open_db);
 	dlp_EndOfSync(sd, dlpEndCodeNormal);
 	pi_close(sd);
 

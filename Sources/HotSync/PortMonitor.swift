@@ -66,7 +66,11 @@ final class PortMonitor {
     }
 
     func isConnected(_ port: String) -> Bool {
-        port == SyncTab.usbPort || serialPorts.contains { $0.id == port }
+        if port == SyncTab.usbPort { return true }
+        if let interface = SyncTab.networkInterface(of: port) {
+            return interface == SyncTab.networkAll || LocalAddress.address(ofInterface: interface) != nil
+        }
+        return serialPorts.contains { $0.id == port }
     }
 
     func serialPort(_ path: String) -> SerialPort? {

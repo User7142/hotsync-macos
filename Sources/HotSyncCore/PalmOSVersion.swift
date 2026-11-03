@@ -18,4 +18,10 @@ public struct PalmOSVersion: Equatable, Sendable, CustomStringConvertible {
 
     /// The ROM can be read over HotSync (DLP RPC) only up to Palm OS 4
     public var canDumpROM: Bool { major < 5 }
+
+    /// Palm OS 5.2 (Tungsten T3) and later have the Garnet PIM applications
+    /// with the CalendarDB-PDat, ContactsDB-PAdd and TasksDB-PTod databases
+    /// and the locL* location databases; earlier devices use Datebook,
+    /// Address and ToDo and have no time-zone tables.
+    public var hasGarnetPIM: Bool { major > 5 || (major == 5 && minor >= 2) }
 }

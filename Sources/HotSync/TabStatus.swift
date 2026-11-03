@@ -1,4 +1,5 @@
 import Foundation
+import PalmSync
 import HotSyncCore
 import Observation
 
@@ -18,6 +19,9 @@ final class TabStatus {
         /// nach den Installationen: die Datenbanken im RAM werden gesichert;
         /// `done` von `total` sind durch (geholt oder unverändert)
         case backingUp(user: PalmUser, file: String?, done: Int, total: Int)
+        /// nach der Sicherung: eine abgeglichene Datenbank wird vom Palm
+        /// gelesen und geprüft
+        case readingCalendar(user: PalmUser, database: String, done: Int)
         /// zum Schluss: das ROM wird ausgelesen, `done` von `total` Bytes
         case dumpingROM(user: PalmUser, done: Int, total: Int)
     }
@@ -78,7 +82,7 @@ final class TabStatus {
 
     var isSyncing: Bool {
         switch phase {
-        case .restoring, .syncing, .backingUp, .dumpingROM: return true
+        case .restoring, .syncing, .backingUp, .readingCalendar, .dumpingROM: return true
         default: return false
         }
     }
@@ -102,6 +106,17 @@ struct PortNotice: Identifiable, Equatable {
     let port: String
     let kind: Kind
     let date: Date
+}
+
+/// Konflikte eines Abgleichs, die der Benutzer entscheidet, während der Palm
+/// in der Sitzung wartet.
+struct ConflictPrompt: Identifiable, Equatable {
+    let id = UUID()
+    /// Kalender, Kontakte oder Aufgaben
+    let what: String
+    let palmName: String
+    let conflicts: [SyncConflict]
+    let sessionToken: Int
 }
 
 /// Ein Palm, den HotSync noch nicht kennt: Der Dialog fragt, ob er ein neues
