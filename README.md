@@ -7,15 +7,18 @@ Background and pilot-link build for Apple Silicon: [palm2000.com](https://palm20
 
 ## Download
 
-A ready-to-use build for **Apple Silicon Macs (macOS 14 or newer)** is available on the
-[Releases page](https://github.com/User7142/hotsync-macos/releases/latest):
-`HotSync-<version>-macos-arm64.zip`. The sync tool and all the libraries it needs are
-included &ndash; no Homebrew, no pilot-link installation required.
+Ready-to-use builds for **macOS 14 or newer** are on the
+[Releases page](https://github.com/User7142/hotsync-macos/releases/latest). Each release
+carries a disk image, `HotSync-<version>-macos-<arch>.dmg`, and the same app as a zip. The
+sync tool and all the libraries it needs are included &ndash; no Homebrew, no pilot-link
+installation required. `<arch>` says which Macs the build runs on: `arm64` for Apple Silicon,
+`x86_64` for Intel, `universal` for both.
 
-1. Unzip and move `HotSync.app` to `/Applications`.
-2. The app is not notarized by Apple, so macOS blocks it on the first start. Open it once,
-   then go to **System Settings → Privacy & Security** and click **Open Anyway**.
-   Alternatively, in the Terminal:
+1. Open the disk image and drag `HotSync` into the `Applications` folder shown next to it.
+2. Unless the release notes say the build is notarized, macOS blocks the app on the first
+   start because it is not signed by an identified developer. Open it once, then go to
+   **System Settings → Privacy & Security** and click **Open Anyway**. Alternatively, in the
+   Terminal:
    ```bash
    xattr -dr com.apple.quarantine /Applications/HotSync.app
    ```
@@ -151,6 +154,27 @@ The build script:
    bundle and rewrites the references to `@rpath`, so the app does not depend on Homebrew; the
    build fails if any reference outside the bundle is left
 4. signs the app ad hoc (no Apple developer account needed)
+
+### Releasing
+
+Releases are built by GitHub Actions (`.github/workflows/release.yml`), not on a developer's
+Mac. Set the version in `Resources/Info.plist`, commit, and push a matching tag:
+
+```bash
+git tag v1.2.3 && git push origin v1.2.3
+```
+
+The workflow builds the app with `Scripts/build.sh`, packs it with `Scripts/make-dmg.sh` into a
+disk image with an `Applications` link next to the app, adds a zip of the same app, and attaches
+both to the release for that tag. The asset names carry the architecture the build produced.
+"Run workflow" on the Actions page builds the same files from any branch and keeps them as an
+artifact instead. Locally, `Scripts/make-dmg.sh` packs the `HotSync.app` from `Scripts/build.sh`
+into the same disk image.
+
+The app is signed ad hoc unless the repository has the secrets listed at the top of the workflow
+file: a Developer ID certificate and a notarytool login. With them, the workflow signs the app
+with the hardened runtime, notarizes the disk image and staples the ticket, and the download
+starts without the "Open Anyway" step. This needs a paid Apple Developer account and is optional.
 
 ### Double-click handler
 

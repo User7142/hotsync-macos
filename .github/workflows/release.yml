@@ -1,0 +1,139 @@
+# Builds HotSync.app on a macOS runner and attaches it to the GitHub release of a version tag,
+# as a disk image (drag into Applications) and as a zip. Run by hand ("Run workflow") it builds
+# the same files and keeps them as a workflow artifact instead.
+#
+# Signing is optional. With the six secrets below set, the app is signed with a Developer ID
+# certificate and the hardened runtime, the disk image is notarized and both are stapled, so
+# the download starts without the "Open Anyway" detour. Without them the app is signed ad hoc,
+# exactly as Scripts/build.sh does locally.
+#
+#   DEVELOPER_ID_P12            the "Developer ID Application" certificate with its private
+#                               key, exported from Keychain Access as .p12 and base64-encoded
+#   DEVELOPER_ID_P12_PASSWORD   the password chosen on export
+#   DEVELOPER_ID_IDENTITY       its name, e.g. "Developer ID Application: Jane Doe (TEAMID1234)"
+#   NOTARY_APPLE_ID             Apple ID of the developer account
+#   NOTARY_TEAM_ID              its 10-character team ID
+#   NOTARY_PASSWORD             an app-specific password for that Apple ID (appleid.apple.com)
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: macos-15
+    env:
+      HAS_SIGNING: ${{ secrets.DEVELOPER_ID_P12 != '' && secrets.NOTARY_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: brew install autoconf automake libtool pkg-config popt
+
+      - name: Check that the tag matches the app version
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match CFBundleShortVersionString $version in Resources/Info.plist"
+            exit 1
+          fi
+
+      - name: Build HotSync.app
+        run: ./Scripts/build.sh
+
+      - name: Name the assets
+        id: names
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' HotSync.app/Contents/Info.plist)"
+          archs="$(lipo -archs HotSync.app/Contents/MacOS/HotSync)"
+          case "$archs" in
+            *arm64*x86_64*|*x86_64*arm64*) arch=universal ;;
+            *) arch="$(echo "$archs" | tr ' ' '-')" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "arch=$arch" >> "$GITHUB_OUTPUT"
+          echo "dmg=HotSync-$version-macos-$arch.dmg" >> "$GITHUB_OUTPUT"
+          echo "zip=HotSync-$version-macos-$arch.zip" >> "$GITHUB_OUTPUT"
+          echo "HotSync $version, $archs"
+
+      - name: Sign with the Developer ID certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          DEVELOPER_ID_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          echo "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 1800 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+
+          # inside out: the embedded libraries and the sync tool first, then the app itself
+          for file in HotSync.app/Contents/Frameworks/*.dylib HotSync.app/Contents/Resources/hotsync-session; do
+            codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID_IDENTITY" "$file"
+          done
+          codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID_IDENTITY" \
+            --entitlements Resources/Entitlements.plist HotSync.app
+          codesign --verify --deep --strict --verbose=2 HotSync.app
+
+      - name: Create the disk image
+        run: ./Scripts/make-dmg.sh HotSync.app "${{ steps.names.outputs.dmg }}"
+
+      - name: Notarize and staple
+        if: env.HAS_SIGNING == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          xcrun notarytool submit "${{ steps.names.outputs.dmg }}" --wait \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD"
+          xcrun stapler staple "${{ steps.names.outputs.dmg }}"
+          xcrun stapler staple HotSync.app
+          spctl --assess --type execute --verbose=2 HotSync.app
+
+      - name: Create the zip
+        run: ditto -c -k --sequesterRsrc --keepParent HotSync.app "${{ steps.names.outputs.zip }}"
+
+      - name: Attach to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG: ${{ steps.names.outputs.dmg }}
+          ZIP: ${{ steps.names.outputs.zip }}
+          VERSION: ${{ steps.names.outputs.version }}
+        run: |
+          if [ "$HAS_SIGNING" = "true" ]; then
+            notes="Signed with a Developer ID and notarized by Apple: no \"Open Anyway\" step needed."
+          else
+            notes="Not notarized: on the first start, allow the app under System Settings → Privacy & Security → Open Anyway."
+          fi
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber "$DMG" "$ZIP"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "HotSync $VERSION" \
+              --generate-notes --notes "$notes" "$DMG" "$ZIP"
+          fi
+
+      - name: Keep the build as an artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: HotSync-${{ steps.names.outputs.version }}-macos-${{ steps.names.outputs.arch }}
+          path: |
+            ${{ steps.names.outputs.dmg }}
+            ${{ steps.names.outputs.zip }}
