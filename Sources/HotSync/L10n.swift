@@ -788,6 +788,10 @@ enum L10n {
         "DateFix auf dem Palm: Startjahr \(startYear), Daten und Uhr werden um \(startYear - 1904) Jahre umgerechnet",
         "DateFix on the Palm: start year \(startYear), dates and clock are converted by \(startYear - 1904) years"
     ) }
+    static func logDateFixChanged(_ what: String, from old: Int, to new: Int) -> String { s(
+        "\(what): DateFix auf dem Palm hat sich geändert (Startjahr \(old) → \(new)): seine Daten bedeuten jetzt andere Jahre. Sie werden mit dem alten Startjahr gelesen und alle im neuen zurückgeschrieben; das zählt als viele Änderungen",
+        "\(what): DateFix on the Palm changed (start year \(old) → \(new)): its dates now mean other years. They are read with the old start year and all written back in the new one; that counts as many changes"
+    ) }
     static func logTimeSetDateFix(_ real: Date, storedYear: Int) -> String { s(
         "Uhr des Palms gestellt: \(real.formatted(date: .abbreviated, time: .shortened)) (DateFix: gespeichert als \(storedYear))",
         "Palm clock set: \(real.formatted(date: .abbreviated, time: .shortened)) (DateFix: stored as \(storedYear))"

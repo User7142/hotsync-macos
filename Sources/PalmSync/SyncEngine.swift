@@ -316,6 +316,14 @@ public struct SyncEngine<Item: SyncedItem> {
     /// away from every date written to it. Record bytes stay in the Palm's
     /// years; only items carry real ones.
     public var dateShift = 0
+    /// The `dateShift` the mirror's records were written under, when it is
+    /// not `dateShift` any more: DateFix was installed, removed or moved to
+    /// another start year since the last sync. The Palm's record bytes did
+    /// not change, so they are read with the old shift (and match the
+    /// mirror's bases), and every mirrored record is written back under
+    /// the new one, so the Palm shows the right years again. Records new on
+    /// the Palm were entered after the change and are read with `dateShift`.
+    public var previousDateShift: Int?
     /// After reading a mirrored item from the Palm: a chance to undo what
     /// the Palm could not store (DateFix's clamp), given the mirror's base.
     public var unclamp: (@Sendable (Item, Item) -> Item)?
@@ -342,14 +350,17 @@ public struct SyncEngine<Item: SyncedItem> {
             if !plan.missingCategories.contains(name) { plan.missingCategories.append(name) }
             return 0
         }
-        func palmItem(_ record: PalmRecordIn) -> Item? {
+        let rebase = previousDateShift.map { $0 != dateShift } ?? false
+        let mirroredShift = rebase ? previousDateShift! : dateShift
+        var keptUndecoded = Set<Int>()   // entries whose Palm bytes no longer decode
+        func palmItem(_ record: PalmRecordIn, shift: Int) -> Item? {
             guard let decoded = try? Item.palmRecord(from: record.data) else {
                 // kept as it is on the Palm (see `opaque`), never shown to the Mac
                 plan.log.append("Palm record \(record.id): cannot be decoded, left alone")
                 return nil
             }
             let name = record.category < palmCategories.count ? palmCategories[record.category] : "Unfiled"
-            return Item(decoded, category: name).shiftingDates(by: dateShift)
+            return Item(decoded, category: name).shiftingDates(by: shift)
         }
         func writePalm(_ item: Item, id: UInt32?, over existing: Data?, mac: MacKey?, macOwned: Bool, secret: Bool = false) {
             let bytes = item.shiftingDates(by: -dateShift).palmBytes(over: existing)
@@ -391,7 +402,7 @@ public struct SyncEngine<Item: SyncedItem> {
                 secret = current.attributes & PalmDatabase.Record.secret != 0
                 if current.isArchived { palm = .archived }
                 else if current.isDeleted { palm = .deleted }
-                else if var item = palmItem(current) {
+                else if var item = palmItem(current, shift: mirroredShift) {
                     if let unclamp { item = unclamp(item, base) }
                     palmBytes = current.data
                     palm = item == base ? .same : .changed(item)
@@ -400,6 +411,7 @@ public struct SyncEngine<Item: SyncedItem> {
                     // are, tell the Mac nothing, keep the mirror's base
                     plan.entries.append(.init(palmID: entry.palmID, mac: entry.mac, item: base, palmRecord: current.data,
                                               macOwned: entry.macOwned, secret: secret))
+                    keptUndecoded.insert(plan.entries.count - 1)
                     continue
                 }
             } else if !fast {
@@ -509,7 +521,7 @@ public struct SyncEngine<Item: SyncedItem> {
         // New on the Palm, each decoded once (an unreadable one is logged once)
         var newPalm = palmRecords.values.filter { !usedPalm.contains($0.id) && !$0.isDeleted && !$0.isArchived }
             .sorted { $0.id < $1.id }
-            .map { (record: $0, item: palmItem($0)) }
+            .map { (record: $0, item: palmItem($0, shift: dateShift)) }
         var newMac = items.filter { !usedMac.contains($0.key) }
 
         if !fast {
@@ -550,6 +562,23 @@ public struct SyncEngine<Item: SyncedItem> {
         }
         for macItem in newMac {
             writePalm(macItem.item, id: nil, over: macItem.palmRecord, mac: macItem.key, macOwned: macItem.macOwned)
+        }
+
+        if rebase {
+            // DateFix changed: every mirrored record still on the Palm is
+            // written again in the new years. Ones the Mac already rewrites
+            // are, the undecodable ones cannot be.
+            let written = Set(plan.palmWrites.map(\.entry))
+            var rewritten = 0
+            for i in plan.entries.indices where plan.entries[i].palmID != nil && !written.contains(i) && !keptUndecoded.contains(i) {
+                let e = plan.entries[i]
+                let bytes = e.item.shiftingDates(by: -dateShift).palmBytes(over: e.palmRecord)
+                if bytes == e.palmRecord { continue }   // new on the Palm since the change: already in the new years
+                plan.entries[i].palmRecord = bytes
+                plan.palmWrites.append(.init(id: e.palmID, category: palmCategory(e.item.category), record: bytes, entry: i))
+                rewritten += 1
+            }
+            plan.log.append("DateFix changed on the Palm (shift \(previousDateShift!) → \(dateShift) years): \(rewritten) records rewritten in the new years")
         }
 
         return plan

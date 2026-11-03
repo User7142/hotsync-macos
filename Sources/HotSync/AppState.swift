@@ -1687,6 +1687,15 @@ final class AppState {
         var engine = given
         engine.palmDeletesTrusted = fast
         engine.dateShift = session.dateFixYears   // DateFix: Palm-Jahre ↔ echte Jahre, an den Werten
+        // Ein anderes DateFix-Startjahr als beim letzten Abgleich: die Bytes
+        // auf dem Palm sind dieselben, bedeuten aber andere Jahre. Mit dem
+        // alten gelesen, mit dem neuen alle zurückgeschrieben.
+        let startYear = 1904 + session.dateFixYears
+        if let known = mirror.dateFixStartYear, known != startYear {
+            engine.previousDateShift = known - 1904
+            tabLog(tabId, L10n.logDateFixChanged(what, from: known, to: startYear))
+        }
+        mirror.dateFixStartYear = startYear
         if !fast, !mirror.entries.isEmpty { tabLog(tabId, L10n.logTwoWayDeletesUntrusted(what)) }
         let bases = Dictionary(mirror.entries.map { ($0.palmID, $0.base) }, uniquingKeysWith: { a, _ in a })
         let palm = PalmSnapshot.all(session.calendarRecords)   // es wird immer alles gelesen

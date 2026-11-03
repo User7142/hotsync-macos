@@ -59,11 +59,17 @@ public struct SyncMirror<Item: SyncedItem>: Equatable, Codable, Sendable {
     public var pcID: UInt32
     public var lastSync: Date?
     public var entries: [MirrorEntry<Item>]
+    /// The Palm's DateFix start year (1904 without DateFix) when the mirror
+    /// was last saved; nil in a mirror from before this was recorded. When
+    /// the Palm reports another one, its stored dates mean other years than
+    /// the mirror's bases say (see `SyncEngine.previousDateShift`).
+    public var dateFixStartYear: Int?
 
-    public init(pcID: UInt32, lastSync: Date? = nil, entries: [MirrorEntry<Item>] = []) {
+    public init(pcID: UInt32, lastSync: Date? = nil, entries: [MirrorEntry<Item>] = [], dateFixStartYear: Int? = nil) {
         self.pcID = pcID
         self.lastSync = lastSync
         self.entries = entries
+        self.dateFixStartYear = dateFixStartYear
     }
 
     /// A fresh ID for a Mac that has none yet: anything but 0, which the

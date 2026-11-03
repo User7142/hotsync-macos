@@ -67,6 +67,39 @@ import Testing
     #expect(plan2.entries[0].item.date.year == 2040)
 }
 
+@Test func aChangedStartYearRewritesEveryRecordInTheNewYears() throws {
+    // synced under DateFix 1972: a 2026 appointment is stored as 1958 and mirrored as 2026
+    var stored = CalendarEvent(date: PalmDate(year: 1958, month: 10, day: 29))
+    stored.title = "Dentist"
+    let base = SyncedEvent(stored, category: "Unfiled").shiftingDates(by: 68)
+    let mirror = SyncMirror<SyncedEvent>(pcID: 1, lastSync: Date(),
+                                         entries: [.init(palmID: 0x6001, mac: MacKey(seriesID: "d"), base: base, palmRecord: stored.encode())],
+                                         dateFixStartYear: 1972)
+    let mac = [MacSyncItem(key: MacKey(seriesID: "d"), item: base)]
+
+    // DateFix moved to 1932: the same bytes now mean 1986 on the Palm
+    var engine = SyncEngine<SyncedEvent>()
+    engine.dateShift = 28
+    engine.previousDateShift = 68
+    let palm = PalmRecordIn(id: 0x6001, category: 0, data: stored.encode())
+    let plan = try engine.plan(palm: .all([palm]), palmCategories: ["Unfiled"], mac: mac, mirror: mirror)
+    // nothing changed for the Mac, the Palm gets the record back in its new years: 2026 − 28 = 1998
+    #expect(plan.macUpdates.isEmpty && plan.macCreates.isEmpty && plan.conflicts.isEmpty)
+    #expect(plan.palmWrites.count == 1 && plan.palmWrites[0].id == 0x6001)
+    #expect(try CalendarEvent(data: plan.palmWrites[0].record).date == PalmDate(year: 1998, month: 10, day: 29))
+    #expect(plan.entries[0].item.date.year == 2026)
+    #expect(plan.log.contains { $0.contains("DateFix changed") })
+    // a Palm record entered after the change is read with the new shift
+    var fresh = CalendarEvent(date: PalmDate(year: 1999, month: 1, day: 2))
+    fresh.title = "New on the Palm"
+    let plan2 = try engine.plan(palm: .all([palm, PalmRecordIn(id: 0x6002, category: 0, data: fresh.encode())]),
+                                palmCategories: ["Unfiled"], mac: mac, mirror: mirror)
+    #expect(plan2.macCreates.count == 1 && plan2.macCreates[0].item.date.year == 2027)
+
+    // the mirror from before the year was recorded says nothing, so nothing is rewritten
+    #expect(SyncMirror<SyncedEvent>(pcID: 1).dateFixStartYear == nil)
+}
+
 @Test func clampedBirthdayKeepsTheMirrorsValue() {
     // on the Palm (start year 1972) a 1962 birthday became 1972-01-01; read back, the mirror's date stands
     var item = SyncedContact(lastName: "Leto", birthday: PalmDate(year: 1972, month: 1, day: 1), category: "Unfiled")
