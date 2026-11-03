@@ -1,0 +1,124 @@
+From 128d27c551c37304207a3b916297144185049430 Mon Sep 17 00:00:00 2001
+From: Anthony Leto <anthony@as393941.com>
+Date: Thu, 29 Oct 2026 11:34:07 -0700
+Subject: [PATCH] libusb: reset a known device that stops answering control
+ requests
+
+A Palm left on the cable while the host sleeps can come back with its
+USB link dead: the device is still enumerated, but every control
+request fails with -EIO ("device not responding" on macOS), and the
+HotSync button on the Palm no longer gets through. Only a USB reset or
+re-plugging the cable revives it. Seen with a LifeDrive on macOS 27
+after every sleep of the Mac; restarting the listener does not help
+because the device itself is stuck.
+
+USB_poll() now counts consecutive -EIO configure failures per device
+and, at the third one, calls usb_reset() before closing the handle.
+The device re-enumerates and the next poll finds it in its normal
+state. Other failures (a device that denies the request, a timeout)
+reset the counter and keep the old behaviour.
+
+For that, USB_configure_device() hands the control request's error
+code up instead of a bare -1, so the backends can tell a denied
+request (-1, no hotsync port) from a dead link (-EIO). All callers
+only test for < 0.
+---
+ libpisock/libusb.c | 36 ++++++++++++++++++++++++++++++++++++
+ libpisock/usb.c    |  8 +++++---
+ 2 files changed, 41 insertions(+), 3 deletions(-)
+
+diff --git a/libpisock/libusb.c b/libpisock/libusb.c
+index 65f91d41..b9e8b0e6 100644
+--- a/libpisock/libusb.c
++++ b/libpisock/libusb.c
+@@ -25,6 +25,7 @@
+ #endif
+ 
+ #include <stdio.h>
++#include <errno.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+@@ -89,6 +90,15 @@ void pi_usb_impl_init (struct pi_usb_impl *impl)
+ 
+ static usb_dev_handle	*USB_handle;
+ static int				USB_interface;
++
++/* A known device that answers the configure request with -EIO this many polls
++ * in a row gets a USB reset. A Palm that stays on the cable while the host
++ * sleeps can come back like this: still enumerated, but its link is dead and
++ * no HotSync on the Palm gets through until the device re-enumerates. The
++ * reset does what re-plugging the cable does; the next poll finds it anew. */
++#define USB_UNRESPONSIVE_RESET_AFTER	3
++static struct usb_device	*USB_unresponsive_dev;
++static int			USB_unresponsive_count;
+ static int				USB_in_endpoint;
+ static int				USB_out_endpoint;
+ static int				USB_in_packet_size;
+@@ -185,12 +195,38 @@ USB_poll (pi_usb_data_t *data)
+ 					"%s: USB configure failed for familar device: 0x%04x 0x%04x. (LifeDrive issue?)\n", 
+ 					__FILE__, dev->descriptor.idVendor, dev->descriptor.idProduct));
+ 
++				if (ret == -EIO) {
++					/* on the bus, but not answering: count, then reset */
++					if (dev == USB_unresponsive_dev) {
++						USB_unresponsive_count++;
++					} else {
++						USB_unresponsive_dev = dev;
++						USB_unresponsive_count = 1;
++					}
++					if (USB_unresponsive_count >= USB_UNRESPONSIVE_RESET_AFTER) {
++						LOG((PI_DBG_DEV, PI_DBG_LVL_ERR,
++							"%s: device 0x%04x:0x%04x not responding %d times in a row, resetting it\n",
++							__FILE__, dev->descriptor.idVendor, dev->descriptor.idProduct,
++							USB_unresponsive_count));
++						/* -ENODEV or -ENODATA here means the device already
++						 * re-enumerated, which is the point */
++						usb_reset(USB_handle);
++						USB_unresponsive_dev = NULL;
++						USB_unresponsive_count = 0;
++					}
++				} else {
++					USB_unresponsive_dev = NULL;
++					USB_unresponsive_count = 0;
++				}
++
+ 				if (USB_handle)
+ 					usb_close(USB_handle);
+ 				USB_handle = NULL;
+ 				data->ref = NULL;
+ 				continue;
+ 			}
++			USB_unresponsive_dev = NULL;
++			USB_unresponsive_count = 0;
+ 
+ 			for (i = 0; i < dev->config[0].interface[0].altsetting[0].bNumEndpoints; i++) {
+ 				struct usb_endpoint_descriptor *endpoint;
+diff --git a/libpisock/usb.c b/libpisock/usb.c
+index 632f8a9a..035ec6a8 100644
+--- a/libpisock/usb.c
++++ b/libpisock/usb.c
+@@ -958,10 +958,12 @@ USB_configure_device (pi_usb_data_t *dev, u_int8_t *input_pipe, u_int8_t *output
+ 			LOG((PI_DBG_DEV, PI_DBG_LVL_ERR, "usb: Sony USB_REQ_GET_INTERFACE failed (err=%08x)\n", ret));
+ 		}
+ 	} else {
+-		/* other devices will either accept or deny this generic call */
++		/* other devices will either accept or deny this generic call. Hand the
++		 * error up unchanged: the backends tell a device that denies the request
++		 * (-1, no hotsync port) from one whose link is dead (-EIO) */
+ 		ret = USB_configure_generic (dev, input_pipe, output_pipe);
+ 		if (ret < 0) {
+-			return -1;
++			return ret;
+ 		}
+ 	}
+ 
+@@ -975,7 +977,7 @@ USB_configure_device (pi_usb_data_t *dev, u_int8_t *input_pipe, u_int8_t *output
+ 		if (ret < 0) {
+ 			LOG((PI_DBG_DEV, PI_DBG_LVL_ERR, "usb: GENERIC_REQUEST_BYTES_AVAILABLE failed (err=%08x)\n", ret));
+ 			/* configuration have to fail to skip this device - or LifeDrive(?) devices will hang */
+-			return -1;
++			return ret;
+ 		}
+ 		LOG((PI_DBG_DEV, PI_DBG_LVL_DEBUG, "GENERIC_REQUEST_BYTES_AVAILABLE returns 0x%02x%02x\n", ba[0], ba[1]));
+ 	}

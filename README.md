@@ -123,8 +123,12 @@ pilot-link does not need to be installed: the build script builds its library `l
 upstream yet, and only rebuilds it when one of them changes. The pinned commit is the upstream
 `main` with the USB fixes from [pilot-link PR #49](https://github.com/desrod/pilot-link/pull/49)
 (high-speed Palms such as the LifeDrive, Sony CLIE devices, no hanging listener, recovery from a
-stalled USB pipe), so no patches are needed at the moment. The tagged 0.15.0/0.15.1 sources do not
-find any USB device on macOS &ndash; this was fixed upstream in commit `c32f9eed`.
+stalled USB pipe). One patch is carried until it is upstream: a Palm that stays on the cable
+while the Mac sleeps can come back with a dead USB link &ndash; still listed, but not answering,
+and the HotSync button on the Palm no longer gets through &ndash; and the patched library resets
+such a device after three failed probes, as re-plugging the cable would. The tagged
+0.15.0/0.15.1 sources do not find any USB device on macOS &ndash; this was fixed upstream in
+commit `c32f9eed`.
 
 libusb and libusb-compat are built the same way (`Scripts/build-libusb.sh`, into `.build/libusb`;
 `Vendor/libusb`, `Vendor/libusb-compat`), and libpisock is built against them, not against
