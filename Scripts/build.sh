@@ -67,6 +67,9 @@ fi
 # App auch auf einem Mac ohne Homebrew bzw. ohne pilot-link in ~/.local.
 echo "[4/6] Baue hotsync-session und bette es ein..."
 "$SCRIPT_DIR/build-pilot-link.sh"
+# Das Zielverzeichnis legt sonst niemand an, wenn SwiftPM mit der Xcode-Toolchain nach
+# .build/apple/... baut; clang braucht es für seine Ausgabe- und Zwischendateien.
+mkdir -p "$(dirname "$SESSION_TOOL")"
 clang -std=c99 -Wall -Wextra -Werror -O2 \
     -I"$PILOT_PREFIX/include" -L"$PILOT_PREFIX/lib" -lpisock \
     -o "$SESSION_TOOL" "$PROJECT_DIR/Tools/hotsync-session/hotsync-session.c"
